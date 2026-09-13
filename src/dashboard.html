@@ -909,15 +909,31 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var W = Math.max(320, box.clientWidth || 900);
     _lastW = box.clientWidth || W;
     var H = 240;
-    var padL = 46, padR = 10, padT = 12, padB = 26;
+    var rows = D.rows;
+
+    // Codex 는 캐시 개념도 단가도 달라서 Claude 막대에 더하면 안 된다.
+    // 날짜 축만 공유하고 오른쪽 축에 별도 선으로 얹는다.
+    var codexBy = {}, codexMax = 0;
+    D.ids.forEach(function (id) {
+      var C = state.machines[id].codex;
+      if (!C || !C.daily) return;
+      Object.keys(C.daily).forEach(function (day) {
+        var b = C.daily[day];
+        var v = (b.i || 0) + (b.o || 0) + (b.cw || 0) + (b.cr || 0);
+        if (v) codexBy[day] = (codexBy[day] || 0) + v;
+      });
+    });
+    rows.forEach(function (r) { if (codexBy[r.day] > codexMax) codexMax = codexBy[r.day]; });
+    var hasCodex = codexMax > 0;
+
+    var padL = 46, padR = hasCodex ? 48 : 10, padT = 12, padB = 26;
     var iw = W - padL - padR, ih = H - padT - padB;
     svg.setAttribute("viewBox", "0 0 " + W + " " + H);
     svg.setAttribute("height", H);
     svg.textContent = "";
 
-    var rows = D.rows;
     document.getElementById("dailyNote").textContent =
-      rows.length ? rows.length + "일 · 머신별 누적" : "";
+      rows.length ? rows.length + "일 · 머신별 누적" + (hasCodex ? " · Codex 는 오른쪽 축" : "") : "";
 
     if (!rows.length) { dailyGeom = null; return; }
 
@@ -972,6 +988,38 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     });
 
+    // Codex: 오른쪽 축에 점선. 막대와 더해서 읽는 값이 아니다.
+    var codexTop = 0, codexColor = cvar("--s2");
+    if (hasCodex) {
+      var cstep = Math.pow(10, Math.floor(Math.log10(codexMax)));
+      codexTop = Math.ceil(codexMax / cstep) * cstep;
+      if (codexTop / codexMax > 1.6) codexTop = Math.ceil(codexMax / (cstep / 2)) * (cstep / 2);
+      [0, 0.5, 1].forEach(function (f) {
+        var cy = padT + ih - ih * f;
+        var ct = svgEl("text", {
+          x: W - padR + 8, y: cy + 3.5, fill: codexColor, "text-anchor": "start",
+          "font-family": "var(--mono)", "font-size": 10
+        });
+        ct.textContent = f === 0 ? "0" : fmt(codexTop * f);
+        svg.appendChild(ct);
+      });
+      var cpath = "", cprev = false;
+      rows.forEach(function (r, i) {
+        var v = codexBy[r.day];
+        if (!v) { cprev = false; return; }
+        var cx2 = padL + bw * i + bw / 2;
+        var cy2 = padT + ih - (v / codexTop) * ih;
+        cpath += (cprev ? "L" : "M") + cx2.toFixed(2) + " " + cy2.toFixed(2) + " ";
+        cprev = true;
+      });
+      if (cpath) {
+        svg.appendChild(svgEl("path", {
+          d: cpath.trim(), fill: "none", stroke: codexColor, "stroke-width": 2,
+          "stroke-dasharray": "4 3", "stroke-linecap": "round", "stroke-linejoin": "round"
+        }));
+      }
+    }
+
     // x labels
     var ticks = Math.min(7, n);
     var seen = {};
@@ -996,7 +1044,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       stroke: cvar("--ink-mute"), "stroke-width": 1, "stroke-dasharray": "2 3", opacity: 0
     });
     svg.appendChild(cross);
-    dailyGeom = { W: W, H: H, padL: padL, padT: padT, ih: ih, bw: bw, rows: rows, ids: ids, cross: cross, svg: svg };
+    dailyGeom = { W: W, H: H, padL: padL, padT: padT, ih: ih, bw: bw, rows: rows, ids: ids,
+                  cross: cross, svg: svg, codexBy: codexBy, codexColor: codexColor };
 
     // legend
     var lg = document.getElementById("dailyLegend");
@@ -1009,6 +1058,13 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         i2.appendChild(document.createTextNode(state.machines[id].machine.label));
         lg.appendChild(i2);
       });
+    }
+    if (hasCodex) {
+      var i3 = el("i");
+      var b3 = el("b"); b3.style.background = codexColor;
+      i3.appendChild(b3);
+      i3.appendChild(document.createTextNode("Codex (오른쪽 축, 합산 아님)"));
+      lg.appendChild(i3);
     }
   }
 
@@ -1056,9 +1112,22 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         c2.style.color = "var(--ink-mute)";
         tr2.appendChild(c1); tr2.appendChild(c2);
         tb.appendChild(tr2);
+        var cv = g.codexBy ? g.codexBy[r.day] : 0;
+        if (cv) {
+          var tr3 = el("tr");
+          var d1 = el("td");
+          var sw2 = el("span", "sw"); sw2.style.background = g.codexColor;
+          d1.appendChild(sw2);
+          d1.appendChild(document.createTextNode("Codex (합산 아님)"));
+          var d2 = el("td", null, fmt(cv));
+          tr3.appendChild(d1); tr3.appendChild(d2);
+          tb.appendChild(tr3);
+        }
         tip.appendChild(tb);
       } else {
-        tip.appendChild(el("div", "t-day", "사용 없음"));
+        var cv0 = g.codexBy ? g.codexBy[r.day] : 0;
+        tip.appendChild(el("div", "t-day",
+          cv0 ? "Claude 사용 없음 · Codex " + fmt(cv0) : "사용 없음"));
       }
       tip.hidden = false;
       var bw2 = box.clientWidth, tw = tip.offsetWidth;
