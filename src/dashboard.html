@@ -1,4 +1,4 @@
-<title>Claude 토큰 미터</title>
+<title>Claude · Codex 토큰 미터</title>
 
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
@@ -230,6 +230,7 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .mini { height: 6px; background: var(--panel-sunk); border-radius: 3px; overflow: hidden; min-width: 60px; }
 .mini > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .stale { color: var(--s2); }
+.session-cell { white-space: nowrap; }
 .badges { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
@@ -267,12 +268,12 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   <header>
     <div>
-      <h1>Claude 토큰 미터</h1>
-      <p class="sub">여러 PC·서버의 Claude Code 사용량을 하나의 계량기로</p>
+      <h1>Claude · Codex 토큰 미터</h1>
+      <p class="sub">여러 PC·서버의 Claude Code·Codex 사용량을 하나의 계량기로</p>
     </div>
     <div class="head-meta">
       <div class="lbl">누적 검침값</div>
-      <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">tokens</span></div>
+      <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">토큰</span></div>
       <div class="lbl" id="meterRange" style="margin-top:4px">—</div>
     </div>
   </header>
@@ -472,12 +473,20 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   loadClaudeWeekly();
 
   // ------------------------------------------------------------ formatting
+  // 한국어 단위(천·만·억·조). 값 이하의 가장 큰 단위로 쓰고, 그 단위에서 반올림한 값이
+  // 다음 단위에 닿을 때만 올린다 ― 999 는 "999", 9,996 은 "1만".
   function fmt(n) {
-    n = n || 0;
-    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
-    return String(Math.round(n));
+    n = Math.round(n || 0);
+    if (n < 1e3) return String(n);
+    var units = [[1e3, "천"], [1e4, "만"], [1e8, "억"], [1e12, "조"]];
+    var i = units.length - 1;
+    while (n < units[i][0]) i--;
+    var q = n / units[i][0], r = +q.toFixed(q < 10 ? 2 : q < 100 ? 1 : 0);
+    if (i + 1 < units.length && r * units[i][0] >= units[i + 1][0]) {
+      i++;
+      r = +(n / units[i][0]).toFixed(2);
+    }
+    return r.toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + units[i][1];
   }
   function comma(n) { return (n || 0).toLocaleString("ko-KR"); }
   function pct(a, b) { return b ? (a / b * 100) : 0; }
@@ -530,6 +539,28 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   function relDays(iso) {
     if (!iso) return null;
     return Math.round((dayParse(todayKey()) - dayParse(iso)) / 86400000);
+  }
+  function relativeTime(value, now) {
+    var at = new Date(value).getTime();
+    var elapsed = Math.max(0, (now == null ? Date.now() : Number(now)) - at);
+    if (!isFinite(at)) return "—";
+    if (elapsed < 60000) return "방금";
+    if (elapsed < 3600000) return Math.floor(elapsed / 60000) + "분 전";
+    if (elapsed < 86400000) return Math.floor(elapsed / 3600000) + "시간 전";
+    return Math.floor(elapsed / 86400000) + "일 전";
+  }
+  function recentSessionWarning(entry, now) {
+    return !!entry && entry.ctx >= 100000 &&
+      (now == null ? Date.now() : Number(now)) - new Date(entry.last).getTime() > 3600000;
+  }
+  function recentSessionCellText(entries, now) {
+    if (!entries.length) return { main: "—", warning: "" };
+    var newest = entries[0];
+    return {
+      main: relativeTime(newest.last, now) + " · 컨텍스트 " + fmt(newest.ctx) +
+        (entries.length > 1 ? " · 이전 세션 " + (entries.length - 1) + "개" : ""),
+      warning: recentSessionWarning(newest, now) ? "재개하면 약 " + fmt(newest.ctx) + " 다시 씀" : ""
+    };
   }
 
   // ------------------------------------------------------------ sample data
@@ -774,7 +805,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function renderHeader(D) {
     document.getElementById("meterTotal").textContent = fmt(D.total);
-    document.getElementById("meterUnit").textContent = "tokens · " + comma(Math.round(D.total));
+    document.getElementById("meterUnit").textContent = "토큰 · " + comma(Math.round(D.total));
     document.getElementById("meterRange").textContent =
       D.first ? (D.first + " → " + D.last) : "데이터 없음";
   }
@@ -845,8 +876,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       ["세션", comma(D.sessions), ""],
       ["메시지", comma(D.msgs), ""],
       ["머신", String(D.ids.length) + " / " + allMachines().length, "활성 / 전체"],
-      ["일 평균", fmt(D.active.length ? D.total / D.active.length : 0), "tokens"],
-      ["턴당 컨텍스트", D.msgs ? fmt(D.comp.cr / D.msgs) : "—", "tokens"]
+      ["일 평균", fmt(D.active.length ? D.total / D.active.length : 0), "토큰"],
+      ["턴당 컨텍스트", D.msgs ? fmt(D.comp.cr / D.msgs) : "—", "토큰"]
     ];
     items.forEach(function (it) {
       var s = el("div", "stat");
@@ -961,6 +992,11 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
       fill.style.width = "0%";
     }
+    var missing = Object.keys(state.machines).filter(function (id) {
+      var H = state.machines[id].hourly;
+      return !H || typeof H !== "object" || !Object.keys(H).length;
+    }).map(function (id) { return state.machines[id].machine.label; });
+    if (missing.length) text.textContent += " · 시간별 기록 없음: " + missing.join(", ") + " (추정에서 빠짐)";
   }
 
   function renderCodex(D) {
@@ -1246,7 +1282,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
       tip.textContent = "";
       tip.appendChild(el("div", "t-day", r.day + " (" + WD[weekdayOf(r.day)] + ")"));
-      tip.appendChild(el("div", "t-tot", fmt(r.total) + " tokens"));
+      tip.appendChild(el("div", "t-tot", fmt(r.total) + " 토큰"));
       if (r.total) {
         var tb = el("table");
         g.ids.forEach(function (id) {
@@ -1409,7 +1445,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tip.textContent = "";
       tip.appendChild(el("div", "t-day", r.day + " (" + WD[weekdayOf(r.day)] + ")"));
       if (v != null) {
-        tip.appendChild(el("div", "t-tot", fmt(v) + " tokens"));
+        tip.appendChild(el("div", "t-tot", fmt(v) + " 토큰"));
       } else {
         tip.appendChild(el("div", "t-day", "사용 없음"));
       }
@@ -1622,13 +1658,13 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var arr = Object.keys(D.projects).map(function (k) { return [k, D.projects[k]]; })
       .sort(function (a, b) { return b[1].t - a[1].t; }).slice(0, 8);
     var head = el("tr");
-    ["프로젝트", "", "토큰", "최근"].forEach(function (h, i) {
+    ["프로젝트", "", "토큰", "최근", "최근 세션"].forEach(function (h, i) {
       head.appendChild(el("th", i === 2 ? "r" : null, h));
     });
     tbl.appendChild(head);
     if (!arr.length) {
       var tr0 = el("tr"); var td0 = el("td", "mut", "데이터 없음");
-      td0.colSpan = 4; tr0.appendChild(td0); tbl.appendChild(tr0); return;
+      td0.colSpan = 5; tr0.appendChild(td0); tbl.appendChild(tr0); return;
     }
     var max = arr[0][1].t || 1;
     arr.forEach(function (p) {
@@ -1642,6 +1678,23 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tr.appendChild(tdb);
       tr.appendChild(el("td", "r", fmt(p[1].t)));
       tr.appendChild(el("td", "mut", p[1].last || "—"));
+      var sessions = [];
+      D.ids.forEach(function (id) {
+        var M = state.machines[id];
+        ((M.recent_sessions || {})[p[0]] || []).forEach(function (entry) {
+          sessions.push({ last: entry.last, ctx: entry.ctx, m: entry.m, machine: M.machine.label });
+        });
+      });
+      sessions.sort(function (a, b) { return new Date(b.last).getTime() - new Date(a.last).getTime(); });
+      sessions = sessions.slice(0, 5);
+      var parts = recentSessionCellText(sessions);
+      var tdSessions = el("td", "mut session-cell", parts.main);
+      if (parts.warning) tdSessions.appendChild(el("span", "stale", " · " + parts.warning));
+      if (sessions.length) tdSessions.title = sessions.map(function (entry) {
+        return localTime(entry.last) + " · 컨텍스트 " + fmt(entry.ctx) +
+          " · 메시지 " + comma(entry.m) + " · " + entry.machine;
+      }).join("\n");
+      tr.appendChild(tdSessions);
       tbl.appendChild(tr);
     });
   }
@@ -1694,6 +1747,24 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
     if (!Array.isArray(payload.limit_hits)) payload.limit_hits = [];
+    var recent = payload.recent_sessions;
+    var clean = {};
+    if (recent && typeof recent === "object" && !Array.isArray(recent)) {
+      Object.keys(recent).forEach(function (project) {
+        if (!Array.isArray(recent[project])) return;
+        var entries = recent[project].filter(function (entry) {
+          return entry && typeof entry === "object" && isFinite(new Date(entry.last).getTime()) &&
+            typeof entry.ctx === "number" && isFinite(entry.ctx) && entry.ctx >= 0 &&
+            typeof entry.m === "number" && isFinite(entry.m) && entry.m >= 0;
+        }).map(function (entry) {
+          return { last: entry.last, ctx: Math.floor(entry.ctx), m: Math.floor(entry.m) };
+        }).sort(function (a, b) {
+          return new Date(b.last).getTime() - new Date(a.last).getTime();
+        }).slice(0, 5);
+        if (entries.length) clean[project] = entries;
+      });
+    }
+    payload.recent_sessions = clean;
   }
 
   function ingest(payload, quiet) {

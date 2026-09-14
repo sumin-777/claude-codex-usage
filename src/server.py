@@ -111,11 +111,11 @@ def load_remote(local_id=None):
 # 다음 스캔에서는 늘어난 꼬리만 파싱한다.
 #
 # 행 형식: [dedup, "YYYY-MM-DD", hour, weekday, model_idx, session_idx,
-#             i, o, cw, cr, cw1, cw5, th]
+#             i, o, cw, cr, cw1, cw5, th, local_iso, main_thread]
 # 모델·세션 이름은 파일별 표에 두고 인덱스만 저장한다 (UUID 반복 제거).
 
 CACHE_DIR = STORE / "cache"
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
 
 
@@ -184,8 +184,8 @@ def _read_rows(path, start_off, models, sessions):
             msg = rec.get("message")
             if not isinstance(msg, dict):
                 msg = {}
-            session = rec.get("sessionId") or path.stem
-            hit = quota_hit(rec, None, session)
+            session = rec.get("sessionId") or str(path)
+            hit = quota_hit(rec, None, rec.get("sessionId") or path.stem)
             if hit is not None:
                 hits.append(hit)
             usage = msg.get("usage")
@@ -213,7 +213,10 @@ def _read_rows(path, start_off, models, sessions):
             rows.append([
                 dedup, local.strftime("%Y-%m-%d"), local.hour, local.weekday(),
                 m_index[model], s_index[session],
-            ] + usage_values(usage))
+            ] + usage_values(usage) + [
+                local.isoformat(timespec="seconds"),
+                not rec.get("isSidechain") and "subagents" not in path.parts,
+            ])
     return rows, hits, off
 
 
@@ -226,7 +229,10 @@ def _dir_entries(root, dirname, paths, stats):
     out = []
 
     for path in paths:
-        rel = path.name
+        try:
+            rel = str(path.relative_to(root / dirname))
+        except ValueError:
+            rel = path.name
         live_names.add(rel)
         try:
             st = path.stat()
@@ -404,6 +410,7 @@ def build_payload_incremental(args):
     daily_sessions = {}
     project_last = {}
     all_sessions = set()
+    recent_sessions = {}
     seen = set()
     dups = 0
     kept = 0
@@ -461,6 +468,8 @@ def build_payload_incremental(args):
             if pj not in projects_agg:
                 projects_agg[pj] = new_bucket()
             add_usage(projects_agg[pj], u)
+            if r[14]:
+                add_recent_session(recent_sessions, pj, session, parse_ts(r[13]), u)
 
             tot = r[6] + r[7] + r[8] + r[9]
             daily_models.setdefault(day, {})
@@ -527,6 +536,9 @@ def build_payload_incremental(args):
     }
     if hourly:
         payload["hourly"] = hourly
+    recent_sessions = finish_recent_sessions(recent_sessions, hourly_since)
+    if recent_sessions:
+        payload["recent_sessions"] = recent_sessions
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost

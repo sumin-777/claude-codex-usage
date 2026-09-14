@@ -97,7 +97,7 @@ _ISO_RE = re.compile(
 def parse_ts(raw):
     """ISO8601 (Z / 오프셋 포함) → aware datetime. 실패 시 None.
 
-    datetime.fromisoformat 은 3.7+ 이라 직접 파싱한다 (3.6 호환).
+    표준 ISO 파서는 3.7+ 이라 직접 파싱한다 (3.6 호환).
     """
     if not raw or not isinstance(raw, str):
         return None
@@ -168,6 +168,28 @@ def normalize_payload_usage(payload):
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
                     bucket.setdefault(key, 0)
+    recent = payload.get("recent_sessions")
+    clean = {}
+    if isinstance(recent, dict):
+        for project, entries in recent.items():
+            if not isinstance(entries, list):
+                continue
+            kept = []
+            for entry in entries[:5]:
+                if not isinstance(entry, dict) or parse_ts(entry.get("last")) is None:
+                    continue
+                ctx, messages = entry.get("ctx"), entry.get("m")
+                if (not isinstance(ctx, (int, float)) or isinstance(ctx, bool) or ctx < 0 or
+                        not isinstance(messages, (int, float)) or isinstance(messages, bool) or messages < 0):
+                    continue
+                kept.append({"last": entry["last"], "ctx": int(ctx), "m": int(messages)})
+            if kept:
+                kept.sort(key=lambda item: parse_ts(item["last"]).timestamp(), reverse=True)
+                clean[str(project)] = kept
+    if clean:
+        payload["recent_sessions"] = clean
+    else:
+        payload.pop("recent_sessions", None)
     return payload
 
 
@@ -212,6 +234,34 @@ def bucket_total(b):
 def add_bucket(dst, src):
     for key in BUCKET_KEYS:
         dst[key] = dst.get(key, 0) + src.get(key, 0)
+
+
+def add_recent_session(groups, project, session, local_dt, usage):
+    sessions = groups.setdefault(project, {})
+    item = sessions.get(session)
+    if item is None:
+        item = {"last": None, "ctx": 0, "m": 0, "_at": -1}
+        sessions[session] = item
+    item["m"] += 1
+    at = local_dt.timestamp()
+    if at > item["_at"]:
+        item["last"] = local_dt.isoformat(timespec="seconds")
+        item["ctx"] = (usage_value(usage, ("input_tokens",)) +
+                       usage_value(usage, ("cache_creation_input_tokens",)) +
+                       usage_value(usage, ("cache_read_input_tokens",)))
+        item["_at"] = at
+
+
+def finish_recent_sessions(groups, cutoff):
+    out = {}
+    for project, sessions in groups.items():
+        items = [item for item in sessions.values()
+                 if item.get("last", "")[:10] >= cutoff]
+        items.sort(key=lambda item: item["_at"], reverse=True)
+        if items:
+            out[project] = [{"last": item["last"], "ctx": item["ctx"], "m": item["m"]}
+                            for item in items[:5]]
+    return out
 
 
 def load_plan(claude_dir):
@@ -404,8 +454,10 @@ def iter_records(root, verbose=False):
         try:
             rel = path.relative_to(root)
             project = decode_project(rel.parts[0]) if rel.parts else "unknown"
+            is_subagent = "subagents" in rel.parts
         except ValueError:
             project = "unknown"
+            is_subagent = "subagents" in path.parts
 
         try:
             fh = path.open("r", encoding="utf-8", errors="replace")
@@ -447,12 +499,12 @@ def iter_records(root, verbose=False):
 
                 yield {
                     "project": project,
-                    "session": rec.get("sessionId") or path.stem,
+                    "session": rec.get("sessionId") or str(path),
                     "dt": dt,
                     "model": str(model),
                     "usage": usage,
                     "dedup": dedup,
-                    "sidechain": bool(rec.get("isSidechain")),
+                    "main_thread": not is_subagent and not rec.get("isSidechain"),
                     "limit_hit": hit,
                 }
 
@@ -470,6 +522,7 @@ def aggregate(root, since=None, until=None, verbose=False):
     daily_sessions = defaultdict(set)
     project_last = {}
     all_sessions = set()
+    recent_sessions = {}
 
     seen = set()
     dup_count = 0
@@ -503,6 +556,8 @@ def aggregate(root, since=None, until=None, verbose=False):
             add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
+        if rec["main_thread"]:
+            add_recent_session(recent_sessions, rec["project"], rec["session"], local_dt, u)
 
         tot = sum(usage_value(u, path) for path, _ in LEGACY_USAGE_FIELDS)
         daily_models[day][rec["model"]] += tot
@@ -538,6 +593,7 @@ def aggregate(root, since=None, until=None, verbose=False):
         "records": kept,
         "duplicates": dup_count,
         "limit_hits": finish_limit_hits(limit_hits, since, until),
+        "recent_sessions": finish_recent_sessions(recent_sessions, hourly_since),
     }
 
 
@@ -682,6 +738,8 @@ def build_payload(args):
     }
     if agg["hourly"]:
         payload["hourly"] = agg["hourly"]
+    if agg["recent_sessions"]:
+        payload["recent_sessions"] = agg["recent_sessions"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:
@@ -798,7 +856,7 @@ import webbrowser
 from pathlib import Path as _Path
 
 STORE = _Path.home() / ".claude-usage"
-PAGE = r"""<title>Claude 토큰 미터</title>
+PAGE = r"""<title>Claude · Codex 토큰 미터</title>
 
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
@@ -1030,6 +1088,7 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .mini { height: 6px; background: var(--panel-sunk); border-radius: 3px; overflow: hidden; min-width: 60px; }
 .mini > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
 .stale { color: var(--s2); }
+.session-cell { white-space: nowrap; }
 .badges { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
@@ -1067,12 +1126,12 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   <header>
     <div>
-      <h1>Claude 토큰 미터</h1>
-      <p class="sub">여러 PC·서버의 Claude Code 사용량을 하나의 계량기로</p>
+      <h1>Claude · Codex 토큰 미터</h1>
+      <p class="sub">여러 PC·서버의 Claude Code·Codex 사용량을 하나의 계량기로</p>
     </div>
     <div class="head-meta">
       <div class="lbl">누적 검침값</div>
-      <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">tokens</span></div>
+      <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">토큰</span></div>
       <div class="lbl" id="meterRange" style="margin-top:4px">—</div>
     </div>
   </header>
@@ -1272,12 +1331,20 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   loadClaudeWeekly();
 
   // ------------------------------------------------------------ formatting
+  // 한국어 단위(천·만·억·조). 값 이하의 가장 큰 단위로 쓰고, 그 단위에서 반올림한 값이
+  // 다음 단위에 닿을 때만 올린다 ― 999 는 "999", 9,996 은 "1만".
   function fmt(n) {
-    n = n || 0;
-    if (n >= 1e9) return (n / 1e9).toFixed(n >= 1e10 ? 0 : 1) + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
-    return String(Math.round(n));
+    n = Math.round(n || 0);
+    if (n < 1e3) return String(n);
+    var units = [[1e3, "천"], [1e4, "만"], [1e8, "억"], [1e12, "조"]];
+    var i = units.length - 1;
+    while (n < units[i][0]) i--;
+    var q = n / units[i][0], r = +q.toFixed(q < 10 ? 2 : q < 100 ? 1 : 0);
+    if (i + 1 < units.length && r * units[i][0] >= units[i + 1][0]) {
+      i++;
+      r = +(n / units[i][0]).toFixed(2);
+    }
+    return r.toLocaleString("ko-KR", { maximumFractionDigits: 2 }) + units[i][1];
   }
   function comma(n) { return (n || 0).toLocaleString("ko-KR"); }
   function pct(a, b) { return b ? (a / b * 100) : 0; }
@@ -1330,6 +1397,28 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   function relDays(iso) {
     if (!iso) return null;
     return Math.round((dayParse(todayKey()) - dayParse(iso)) / 86400000);
+  }
+  function relativeTime(value, now) {
+    var at = new Date(value).getTime();
+    var elapsed = Math.max(0, (now == null ? Date.now() : Number(now)) - at);
+    if (!isFinite(at)) return "—";
+    if (elapsed < 60000) return "방금";
+    if (elapsed < 3600000) return Math.floor(elapsed / 60000) + "분 전";
+    if (elapsed < 86400000) return Math.floor(elapsed / 3600000) + "시간 전";
+    return Math.floor(elapsed / 86400000) + "일 전";
+  }
+  function recentSessionWarning(entry, now) {
+    return !!entry && entry.ctx >= 100000 &&
+      (now == null ? Date.now() : Number(now)) - new Date(entry.last).getTime() > 3600000;
+  }
+  function recentSessionCellText(entries, now) {
+    if (!entries.length) return { main: "—", warning: "" };
+    var newest = entries[0];
+    return {
+      main: relativeTime(newest.last, now) + " · 컨텍스트 " + fmt(newest.ctx) +
+        (entries.length > 1 ? " · 이전 세션 " + (entries.length - 1) + "개" : ""),
+      warning: recentSessionWarning(newest, now) ? "재개하면 약 " + fmt(newest.ctx) + " 다시 씀" : ""
+    };
   }
 
   // ------------------------------------------------------------ sample data
@@ -1574,7 +1663,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function renderHeader(D) {
     document.getElementById("meterTotal").textContent = fmt(D.total);
-    document.getElementById("meterUnit").textContent = "tokens · " + comma(Math.round(D.total));
+    document.getElementById("meterUnit").textContent = "토큰 · " + comma(Math.round(D.total));
     document.getElementById("meterRange").textContent =
       D.first ? (D.first + " → " + D.last) : "데이터 없음";
   }
@@ -1645,8 +1734,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       ["세션", comma(D.sessions), ""],
       ["메시지", comma(D.msgs), ""],
       ["머신", String(D.ids.length) + " / " + allMachines().length, "활성 / 전체"],
-      ["일 평균", fmt(D.active.length ? D.total / D.active.length : 0), "tokens"],
-      ["턴당 컨텍스트", D.msgs ? fmt(D.comp.cr / D.msgs) : "—", "tokens"]
+      ["일 평균", fmt(D.active.length ? D.total / D.active.length : 0), "토큰"],
+      ["턴당 컨텍스트", D.msgs ? fmt(D.comp.cr / D.msgs) : "—", "토큰"]
     ];
     items.forEach(function (it) {
       var s = el("div", "stat");
@@ -1761,6 +1850,11 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
       fill.style.width = "0%";
     }
+    var missing = Object.keys(state.machines).filter(function (id) {
+      var H = state.machines[id].hourly;
+      return !H || typeof H !== "object" || !Object.keys(H).length;
+    }).map(function (id) { return state.machines[id].machine.label; });
+    if (missing.length) text.textContent += " · 시간별 기록 없음: " + missing.join(", ") + " (추정에서 빠짐)";
   }
 
   function renderCodex(D) {
@@ -2046,7 +2140,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
       tip.textContent = "";
       tip.appendChild(el("div", "t-day", r.day + " (" + WD[weekdayOf(r.day)] + ")"));
-      tip.appendChild(el("div", "t-tot", fmt(r.total) + " tokens"));
+      tip.appendChild(el("div", "t-tot", fmt(r.total) + " 토큰"));
       if (r.total) {
         var tb = el("table");
         g.ids.forEach(function (id) {
@@ -2209,7 +2303,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tip.textContent = "";
       tip.appendChild(el("div", "t-day", r.day + " (" + WD[weekdayOf(r.day)] + ")"));
       if (v != null) {
-        tip.appendChild(el("div", "t-tot", fmt(v) + " tokens"));
+        tip.appendChild(el("div", "t-tot", fmt(v) + " 토큰"));
       } else {
         tip.appendChild(el("div", "t-day", "사용 없음"));
       }
@@ -2422,13 +2516,13 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var arr = Object.keys(D.projects).map(function (k) { return [k, D.projects[k]]; })
       .sort(function (a, b) { return b[1].t - a[1].t; }).slice(0, 8);
     var head = el("tr");
-    ["프로젝트", "", "토큰", "최근"].forEach(function (h, i) {
+    ["프로젝트", "", "토큰", "최근", "최근 세션"].forEach(function (h, i) {
       head.appendChild(el("th", i === 2 ? "r" : null, h));
     });
     tbl.appendChild(head);
     if (!arr.length) {
       var tr0 = el("tr"); var td0 = el("td", "mut", "데이터 없음");
-      td0.colSpan = 4; tr0.appendChild(td0); tbl.appendChild(tr0); return;
+      td0.colSpan = 5; tr0.appendChild(td0); tbl.appendChild(tr0); return;
     }
     var max = arr[0][1].t || 1;
     arr.forEach(function (p) {
@@ -2442,6 +2536,23 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tr.appendChild(tdb);
       tr.appendChild(el("td", "r", fmt(p[1].t)));
       tr.appendChild(el("td", "mut", p[1].last || "—"));
+      var sessions = [];
+      D.ids.forEach(function (id) {
+        var M = state.machines[id];
+        ((M.recent_sessions || {})[p[0]] || []).forEach(function (entry) {
+          sessions.push({ last: entry.last, ctx: entry.ctx, m: entry.m, machine: M.machine.label });
+        });
+      });
+      sessions.sort(function (a, b) { return new Date(b.last).getTime() - new Date(a.last).getTime(); });
+      sessions = sessions.slice(0, 5);
+      var parts = recentSessionCellText(sessions);
+      var tdSessions = el("td", "mut session-cell", parts.main);
+      if (parts.warning) tdSessions.appendChild(el("span", "stale", " · " + parts.warning));
+      if (sessions.length) tdSessions.title = sessions.map(function (entry) {
+        return localTime(entry.last) + " · 컨텍스트 " + fmt(entry.ctx) +
+          " · 메시지 " + comma(entry.m) + " · " + entry.machine;
+      }).join("\n");
+      tr.appendChild(tdSessions);
       tbl.appendChild(tr);
     });
   }
@@ -2494,6 +2605,24 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
     if (!Array.isArray(payload.limit_hits)) payload.limit_hits = [];
+    var recent = payload.recent_sessions;
+    var clean = {};
+    if (recent && typeof recent === "object" && !Array.isArray(recent)) {
+      Object.keys(recent).forEach(function (project) {
+        if (!Array.isArray(recent[project])) return;
+        var entries = recent[project].filter(function (entry) {
+          return entry && typeof entry === "object" && isFinite(new Date(entry.last).getTime()) &&
+            typeof entry.ctx === "number" && isFinite(entry.ctx) && entry.ctx >= 0 &&
+            typeof entry.m === "number" && isFinite(entry.m) && entry.m >= 0;
+        }).map(function (entry) {
+          return { last: entry.last, ctx: Math.floor(entry.ctx), m: Math.floor(entry.m) };
+        }).sort(function (a, b) {
+          return new Date(b.last).getTime() - new Date(a.last).getTime();
+        }).slice(0, 5);
+        if (entries.length) clean[project] = entries;
+      });
+    }
+    payload.recent_sessions = clean;
   }
 
   function ingest(payload, quiet) {
@@ -2803,11 +2932,11 @@ def load_remote(local_id=None):
 # 다음 스캔에서는 늘어난 꼬리만 파싱한다.
 #
 # 행 형식: [dedup, "YYYY-MM-DD", hour, weekday, model_idx, session_idx,
-#             i, o, cw, cr, cw1, cw5, th]
+#             i, o, cw, cr, cw1, cw5, th, local_iso, main_thread]
 # 모델·세션 이름은 파일별 표에 두고 인덱스만 저장한다 (UUID 반복 제거).
 
 CACHE_DIR = STORE / "cache"
-CACHE_VERSION = 3
+CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
 
 
@@ -2876,8 +3005,8 @@ def _read_rows(path, start_off, models, sessions):
             msg = rec.get("message")
             if not isinstance(msg, dict):
                 msg = {}
-            session = rec.get("sessionId") or path.stem
-            hit = quota_hit(rec, None, session)
+            session = rec.get("sessionId") or str(path)
+            hit = quota_hit(rec, None, rec.get("sessionId") or path.stem)
             if hit is not None:
                 hits.append(hit)
             usage = msg.get("usage")
@@ -2905,7 +3034,10 @@ def _read_rows(path, start_off, models, sessions):
             rows.append([
                 dedup, local.strftime("%Y-%m-%d"), local.hour, local.weekday(),
                 m_index[model], s_index[session],
-            ] + usage_values(usage))
+            ] + usage_values(usage) + [
+                local.isoformat(timespec="seconds"),
+                not rec.get("isSidechain") and "subagents" not in path.parts,
+            ])
     return rows, hits, off
 
 
@@ -2918,7 +3050,10 @@ def _dir_entries(root, dirname, paths, stats):
     out = []
 
     for path in paths:
-        rel = path.name
+        try:
+            rel = str(path.relative_to(root / dirname))
+        except ValueError:
+            rel = path.name
         live_names.add(rel)
         try:
             st = path.stat()
@@ -3096,6 +3231,7 @@ def build_payload_incremental(args):
     daily_sessions = {}
     project_last = {}
     all_sessions = set()
+    recent_sessions = {}
     seen = set()
     dups = 0
     kept = 0
@@ -3153,6 +3289,8 @@ def build_payload_incremental(args):
             if pj not in projects_agg:
                 projects_agg[pj] = new_bucket()
             add_usage(projects_agg[pj], u)
+            if r[14]:
+                add_recent_session(recent_sessions, pj, session, parse_ts(r[13]), u)
 
             tot = r[6] + r[7] + r[8] + r[9]
             daily_models.setdefault(day, {})
@@ -3219,6 +3357,9 @@ def build_payload_incremental(args):
     }
     if hourly:
         payload["hourly"] = hourly
+    recent_sessions = finish_recent_sessions(recent_sessions, hourly_since)
+    if recent_sessions:
+        payload["recent_sessions"] = recent_sessions
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost

@@ -12,19 +12,39 @@ git repo 등)에 모아두고 이 스크립트를 돌리면 대시보드가 읽�
 
 import argparse
 import json
+import re
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 SCHEMA_VERSION = 2
 KEYS = ("i", "o", "cw", "cr", "cw1", "cw5", "th", "m")
+RECENT_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})$"
+)
 
 
 def merge_bucket(dst, src):
     for k in KEYS:
         dst[k] = dst.get(k, 0) + src.get(k, 0)
     return dst
+
+
+def recent_time(entry):
+    match = RECENT_RE.match(str(entry.get("last", "")))
+    if not match:
+        return datetime.min
+    try:
+        value = datetime.strptime(match.group(1), "%Y-%m-%dT%H:%M:%S")
+        offset = match.group(2)
+        if offset != "Z":
+            digits = offset[1:].replace(":", "")
+            delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:]))
+            value -= delta if offset[0] == "+" else -delta
+        return value
+    except ValueError:
+        return datetime.min
 
 
 def normalize_machine(d):
@@ -40,6 +60,25 @@ def normalize_machine(d):
             if isinstance(bucket, dict):
                 for key in ("cw1", "cw5", "th"):
                     bucket.setdefault(key, 0)
+    recent = d.get("recent_sessions")
+    clean = {}
+    if isinstance(recent, dict):
+        for project, entries in recent.items():
+            kept = []
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict) or recent_time(entry) == datetime.min:
+                    continue
+                ctx, messages = entry.get("ctx"), entry.get("m")
+                if (not isinstance(ctx, (int, float)) or isinstance(ctx, bool) or ctx < 0 or
+                        not isinstance(messages, (int, float)) or isinstance(messages, bool) or messages < 0):
+                    continue
+                kept.append({"last": entry["last"], "ctx": int(ctx), "m": int(messages)})
+            if kept:
+                clean[str(project)] = sorted(kept, key=recent_time, reverse=True)[:5]
+    if clean:
+        d["recent_sessions"] = clean
+    else:
+        d.pop("recent_sessions", None)
     return d
 
 
@@ -77,6 +116,7 @@ def merge(machines):
     codex_daily = defaultdict(dict)
     codex_limits = None
     limit_hits = {}
+    recent_sessions = defaultdict(list)
 
     for d in machines:
         label = d["machine"]["label"]
@@ -96,6 +136,11 @@ def merge(machines):
             merge_bucket(tgt, b)
             if b.get("last") and b["last"] > tgt.get("last", ""):
                 tgt["last"] = b["last"]
+        for name, entries in d.get("recent_sessions", {}).items():
+            for entry in entries:
+                item = dict(entry)
+                item["machine"] = label
+                recent_sessions[name].append(item)
         for i, v in enumerate(d.get("hours", [])[:24]):
             hours[i] += v
         for wd, row in enumerate(d.get("weekday_hour", [])[:7]):
@@ -163,6 +208,11 @@ def merge(machines):
     }
     if hourly:
         out["hourly"] = dict(hourly)
+    if recent_sessions:
+        out["recent_sessions"] = {
+            project: sorted(entries, key=recent_time, reverse=True)[:5]
+            for project, entries in recent_sessions.items()
+        }
     if codex_daily or codex_limits:
         codex_totals = {k: 0 for k in KEYS}
         for b in codex_daily.values():

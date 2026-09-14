@@ -84,7 +84,7 @@ _ISO_RE = re.compile(
 def parse_ts(raw):
     """ISO8601 (Z / 오프셋 포함) → aware datetime. 실패 시 None.
 
-    datetime.fromisoformat 은 3.7+ 이라 직접 파싱한다 (3.6 호환).
+    표준 ISO 파서는 3.7+ 이라 직접 파싱한다 (3.6 호환).
     """
     if not raw or not isinstance(raw, str):
         return None
@@ -155,6 +155,28 @@ def normalize_payload_usage(payload):
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
                     bucket.setdefault(key, 0)
+    recent = payload.get("recent_sessions")
+    clean = {}
+    if isinstance(recent, dict):
+        for project, entries in recent.items():
+            if not isinstance(entries, list):
+                continue
+            kept = []
+            for entry in entries[:5]:
+                if not isinstance(entry, dict) or parse_ts(entry.get("last")) is None:
+                    continue
+                ctx, messages = entry.get("ctx"), entry.get("m")
+                if (not isinstance(ctx, (int, float)) or isinstance(ctx, bool) or ctx < 0 or
+                        not isinstance(messages, (int, float)) or isinstance(messages, bool) or messages < 0):
+                    continue
+                kept.append({"last": entry["last"], "ctx": int(ctx), "m": int(messages)})
+            if kept:
+                kept.sort(key=lambda item: parse_ts(item["last"]).timestamp(), reverse=True)
+                clean[str(project)] = kept
+    if clean:
+        payload["recent_sessions"] = clean
+    else:
+        payload.pop("recent_sessions", None)
     return payload
 
 
@@ -199,6 +221,34 @@ def bucket_total(b):
 def add_bucket(dst, src):
     for key in BUCKET_KEYS:
         dst[key] = dst.get(key, 0) + src.get(key, 0)
+
+
+def add_recent_session(groups, project, session, local_dt, usage):
+    sessions = groups.setdefault(project, {})
+    item = sessions.get(session)
+    if item is None:
+        item = {"last": None, "ctx": 0, "m": 0, "_at": -1}
+        sessions[session] = item
+    item["m"] += 1
+    at = local_dt.timestamp()
+    if at > item["_at"]:
+        item["last"] = local_dt.isoformat(timespec="seconds")
+        item["ctx"] = (usage_value(usage, ("input_tokens",)) +
+                       usage_value(usage, ("cache_creation_input_tokens",)) +
+                       usage_value(usage, ("cache_read_input_tokens",)))
+        item["_at"] = at
+
+
+def finish_recent_sessions(groups, cutoff):
+    out = {}
+    for project, sessions in groups.items():
+        items = [item for item in sessions.values()
+                 if item.get("last", "")[:10] >= cutoff]
+        items.sort(key=lambda item: item["_at"], reverse=True)
+        if items:
+            out[project] = [{"last": item["last"], "ctx": item["ctx"], "m": item["m"]}
+                            for item in items[:5]]
+    return out
 
 
 def load_plan(claude_dir):
@@ -391,8 +441,10 @@ def iter_records(root, verbose=False):
         try:
             rel = path.relative_to(root)
             project = decode_project(rel.parts[0]) if rel.parts else "unknown"
+            is_subagent = "subagents" in rel.parts
         except ValueError:
             project = "unknown"
+            is_subagent = "subagents" in path.parts
 
         try:
             fh = path.open("r", encoding="utf-8", errors="replace")
@@ -434,12 +486,12 @@ def iter_records(root, verbose=False):
 
                 yield {
                     "project": project,
-                    "session": rec.get("sessionId") or path.stem,
+                    "session": rec.get("sessionId") or str(path),
                     "dt": dt,
                     "model": str(model),
                     "usage": usage,
                     "dedup": dedup,
-                    "sidechain": bool(rec.get("isSidechain")),
+                    "main_thread": not is_subagent and not rec.get("isSidechain"),
                     "limit_hit": hit,
                 }
 
@@ -457,6 +509,7 @@ def aggregate(root, since=None, until=None, verbose=False):
     daily_sessions = defaultdict(set)
     project_last = {}
     all_sessions = set()
+    recent_sessions = {}
 
     seen = set()
     dup_count = 0
@@ -490,6 +543,8 @@ def aggregate(root, since=None, until=None, verbose=False):
             add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
+        if rec["main_thread"]:
+            add_recent_session(recent_sessions, rec["project"], rec["session"], local_dt, u)
 
         tot = sum(usage_value(u, path) for path, _ in LEGACY_USAGE_FIELDS)
         daily_models[day][rec["model"]] += tot
@@ -525,6 +580,7 @@ def aggregate(root, since=None, until=None, verbose=False):
         "records": kept,
         "duplicates": dup_count,
         "limit_hits": finish_limit_hits(limit_hits, since, until),
+        "recent_sessions": finish_recent_sessions(recent_sessions, hourly_since),
     }
 
 
@@ -669,6 +725,8 @@ def build_payload(args):
     }
     if agg["hourly"]:
         payload["hourly"] = agg["hourly"]
+    if agg["recent_sessions"]:
+        payload["recent_sessions"] = agg["recent_sessions"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:
