@@ -117,6 +117,36 @@ def decode_project(dirname):
     return parts[-1] if parts else dirname
 
 
+_UUID_TAIL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+
+
+def project_name(root, dirname):
+    """
+    원격(SSH) 세션 폴더처럼 이름이 UUID 로 끝나면 경로가 인코딩돼 있지 않다.
+    그때는 각 파일 앞부분의 첫 cwd 중 가장 짧은 경로의 마지막 조각을 쓴다.
+    """
+    if not dirname or not _UUID_TAIL.search(dirname):
+        return decode_project(dirname)
+    names = []
+    for path in sorted(Path(root, dirname).glob("*.jsonl")):
+        # ponytail: 파일마다 앞 20줄의 첫 cwd 만 본다. 모든 세션이 하위 폴더에서 시작했으면 그 이름이 된다
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                for _, line in zip(range(20), fh):
+                    m = _CWD_RE.search(line)
+                    if m:
+                        cwd = m.group(1).replace("\\\\", "\\")
+                        cwd = re.split(r"[\\/]\.claude[\\/]worktrees[\\/]", cwd)[0]
+                        parts = [p for p in re.split(r"[\\/]", cwd) if p]
+                        if parts:
+                            names.append((len(parts), parts[-1]))
+                        break
+        except OSError:
+            continue
+    return min(names)[1] if names else decode_project(dirname)
+
+
 def machine_identity(label):
     host = socket.gethostname()
     lbl = label or host
@@ -437,10 +467,13 @@ def iter_records(root, verbose=False):
     if verbose:
         print(f"  {len(files)}개 트랜스크립트 파일 발견", file=sys.stderr)
 
+    names = {}
     for path in files:
         try:
             rel = path.relative_to(root)
-            project = decode_project(rel.parts[0]) if rel.parts else "unknown"
+            if rel.parts and rel.parts[0] not in names:
+                names[rel.parts[0]] = project_name(root, rel.parts[0])
+            project = names[rel.parts[0]] if rel.parts else "unknown"
             is_subagent = "subagents" in rel.parts
         except ValueError:
             project = "unknown"

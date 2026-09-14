@@ -117,6 +117,7 @@ def load_remote(local_id=None):
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
+PAYLOAD_CACHE_VERSION = 2   # payload 를 만드는 규칙이 바뀌면 올린다 (1 hourly, 2 UUID 폴더의 프로젝트 이름)
 
 
 def _cache_path(rel):
@@ -362,7 +363,7 @@ def _load_payload_cache(fp, args):
     except (OSError, ValueError):
         return None
     if (d.get("fp") != list(fp) or d.get("schema_v") != SCHEMA_VERSION or
-            d.get("cache_v") != CACHE_VERSION or d.get("hourly_v") != 1):
+            d.get("cache_v") != CACHE_VERSION or d.get("payload_v") != PAYLOAD_CACHE_VERSION):
         return None
     pl = d.get("payload")
     if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
@@ -378,7 +379,7 @@ def _save_payload_cache(fp, payload, args):
         tmp = PAYLOAD_CACHE.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             _json.dump({"fp": list(fp), "schema_v": SCHEMA_VERSION,
-                        "cache_v": CACHE_VERSION, "hourly_v": 1, "payload": payload},
+                        "cache_v": CACHE_VERSION, "payload_v": PAYLOAD_CACHE_VERSION, "payload": payload},
                        f, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(PAYLOAD_CACHE)
     except OSError:
@@ -429,7 +430,7 @@ def build_payload_incremental(args):
     entries = []
     for dirname in sorted(by_dir):
         live.add(_cache_path(dirname).name)
-        pj = decode_project(dirname)
+        pj = project_name(root, dirname)
         for e in _dir_entries(root, dirname, by_dir[dirname], stats):
             entries.append((pj, e))
 

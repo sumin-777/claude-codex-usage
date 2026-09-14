@@ -40,7 +40,7 @@ Claude의 `message.usage`와 한도 거절 표시, Codex의 `token_count` 이벤
 | `machine.hostname` | 호스트명. `--machine` 으로 표시 이름을 바꿔도 이 필드는 따로 기록된다 |
 | `machine.os` | OS 이름과 버전 |
 | `source.root` | 트랜스크립트 디렉터리의 절대경로. **사용자 계정명이 포함된다** (`C:\Users\alice\.claude\projects`) |
-| `projects` | 프로젝트 이름. 경로의 마지막 조각만 남는다 (`-home-alice-work-myapp` → `myapp`) |
+| `projects` | 프로젝트 이름. 경로의 마지막 조각만 남는다 (`-home-alice-work-myapp` → `myapp`). 원격(SSH) 세션처럼 폴더 이름이 UUID 로 끝나면 기록의 작업 폴더(`cwd`) 마지막 조각을 쓴다 |
 | `tz` | 로컬 타임존 |
 | `hourly` | Claude의 최근 8개 로컬 날짜 시간별 토큰·메시지 수치. 데이터가 없으면 생략하며 대화 내용은 포함하지 않는다 |
 | `recent_sessions` | 프로젝트별 최근 Claude 메인 세션 최대 5개의 마지막 활동 시각·컨텍스트 크기·메시지 수. 세션 ID나 파일 정보는 포함하지 않는다 |
