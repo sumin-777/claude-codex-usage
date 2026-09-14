@@ -967,6 +967,10 @@ section { margin-top: 34px; }
 .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
 .sec-head h2 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: -.005em; }
 .sec-head .note { font-size: 12px; color: var(--ink-mute); margin-left: auto; font-family: var(--mono); }
+summary.sec-head { cursor: pointer; list-style: none; }
+summary.sec-head::-webkit-details-marker { display: none; }
+summary.sec-head h2::before { content: "▸ "; color: var(--ink-mute); }
+details[open] > summary.sec-head h2::before { content: "▾ "; }
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; }
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; gap: 30px; } }
@@ -1082,21 +1086,12 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   <section id="codexSection" hidden>
     <div class="sec-head">
-      <h2>Codex 사용량</h2>
+      <h2>Claude · Codex 사용량</h2>
       <div class="note" id="codexNote"></div>
     </div>
     <div id="codexLimits"></div>
     <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
-    <p class="hint">Codex 백분율은 OpenAI가 기록한 값입니다. Claude는 백분율 없이 거절된 순간만 기록합니다.</p>
-  </section>
-
-  <section id="limitSection" hidden>
-    <div class="sec-head">
-      <h2>한도에 걸린 기록</h2>
-      <div class="note" id="limitNote"></div>
-    </div>
-    <div class="tbl-scroll"><table class="ledger" id="limitTable"></table></div>
-    <p class="hint">Claude의 실시간 사용률이 아니라 요청이 거절된 순간의 기록입니다.</p>
+    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 한도 %는 서버에서만 조회되고 로컬 기록에 남지 않아 여기서는 표시하지 않습니다 — Claude 앱의 사용량 화면에서 확인하세요.</p>
   </section>
 
   <section>
@@ -1187,6 +1182,17 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       수집: <code>python3 claude-usage-collect.py --machine "집-데스크탑"</code> ·
       머신 id가 같은 파일을 다시 넣으면 최신 스냅샷으로 교체됩니다.
     </p>
+  </section>
+
+  <section id="limitSection" hidden>
+    <details>
+      <summary class="sec-head">
+        <h2>한도에 걸린 기록</h2>
+        <span class="note" id="limitNote"></span>
+      </summary>
+      <div class="tbl-scroll"><table class="ledger" id="limitTable"></table></div>
+      <p class="hint">Claude의 실시간 사용률이 아니라 요청이 거절된 순간의 기록입니다.</p>
+    </details>
   </section>
 
   <footer>
@@ -1637,7 +1643,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         var last = Number(w.used_percent || 0);
         var peak = Math.max(Number(w.peak_percent || 0), last);
         var row = el("div", "limit-meter" + (stale ? " stale" : ""));
-        row.appendChild(el("div", null, windowName(w.window_minutes) + " " +
+        row.appendChild(el("div", null, "Codex " + windowName(w.window_minutes) + " " +
           peak.toFixed(1) + "%" + (peak - last >= 1 ? " (최근 보고 " + last.toFixed(1) + "%)" : "") +
           " · 리셋 " + localTime(w.resets_at) +
           (newest.plan ? " · " + newest.plan : "") + " · " + localTime(newest.at) + " 기준" +
@@ -1648,19 +1654,21 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
     var tbl = document.getElementById("codexTable"); tbl.textContent = "";
-    var head = el("tr"); ["구분", "토큰", "비고"].forEach(function (h, i) {
-      head.appendChild(el("th", i === 1 ? "r" : null, h));
+    var head = el("tr"); ["구분", "Claude", "Codex", "비고"].forEach(function (h, i) {
+      head.appendChild(el("th", i === 1 || i === 2 ? "r" : null, h));
     }); tbl.appendChild(head);
-    [["입력", totals.i, "캐시 제외"], ["캐시된 입력", totals.cr, "입력의 부분집합"],
-     ["출력", totals.o, "그중 추론 " + comma(totals.th)],
-     ["요청", totals.m, "회"]].forEach(function (r) {
+    var cl = D.comp;
+    [["입력", cl.i, totals.i, "캐시 제외"],
+     ["캐시 읽기", cl.cr, totals.cr, "Codex는 캐시된 입력"],
+     ["캐시 쓰기", cl.cw, totals.cw, ""],
+     ["출력", cl.o, totals.o, ""],
+     ["↳ 그중 추론", cl.th, totals.th, "출력의 부분집합"],
+     ["요청", D.msgs, totals.m, "회"]].forEach(function (r) {
       var tr = el("tr"); tr.appendChild(el("td", null, r[0]));
-      tr.appendChild(el("td", "r", comma(r[1]))); tr.appendChild(el("td", "mut", r[2])); tbl.appendChild(tr);
+      tr.appendChild(el("td", "r", comma(r[1] || 0)));
+      tr.appendChild(el("td", "r", r[2] ? comma(r[2]) : "—"));
+      tr.appendChild(el("td", "mut", r[3])); tbl.appendChild(tr);
     });
-    if (totals.cw) {
-      var tr = el("tr"); tr.appendChild(el("td", null, "캐시 쓰기"));
-      tr.appendChild(el("td", "r", comma(totals.cw))); tr.appendChild(el("td", "mut", "")); tbl.appendChild(tr);
-    }
     document.getElementById("codexNote").textContent = D.from ? "선택 기간" : "전체 기간";
   }
 
@@ -2082,6 +2090,15 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       head.appendChild(th);
     });
     tbl.appendChild(head);
+    // 부분집합 행은 부모 바로 아래에 두고, 비중도 부모 대비로 적는다
+    function subsetRow(name, value, parent, parentName) {
+      var tr = el("tr");
+      tr.appendChild(el("td", "mut", "↳ " + name));
+      tr.appendChild(el("td", "r mut", fmt(value)));
+      tr.appendChild(el("td", "r mut", parentName + "의 " + pct(value, parent).toFixed(1) + "%"));
+      tbl.appendChild(tr);
+    }
+
     COMP.forEach(function (c) {
       var v = D.comp[c.k] || 0;
       var tr = el("tr");
@@ -2095,27 +2112,15 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tr.appendChild(el("td", "r", fmt(v)));
       tr.appendChild(el("td", "r", pct(v, total).toFixed(1) + "%"));
       tbl.appendChild(tr);
+
+      if (c.k === "cw" && ((D.comp.cw1 || 0) > 0 || (D.comp.cw5 || 0) > 0)) {
+        subsetRow("1시간 캐시", D.comp.cw1 || 0, v, "캐시 쓰기");
+        subsetRow("5분 캐시", D.comp.cw5 || 0, v, "캐시 쓰기");
+        var remainder = v - (D.comp.cw1 || 0) - (D.comp.cw5 || 0);
+        if (remainder >= Math.max(1000, v * 0.001)) subsetRow("미분류", remainder, v, "캐시 쓰기");
+      }
+      if (c.k === "o" && (D.comp.th || 0) > 0) subsetRow("thinking", D.comp.th, v, "출력");
     });
-
-    function subsetRow(name, value, parent) {
-      var tr = el("tr");
-      tr.appendChild(el("td", null, "↳ " + name));
-      tr.appendChild(el("td", "r", fmt(value)));
-      tr.appendChild(el("td", "r", pct(value, parent).toFixed(1) + "%"));
-      tbl.appendChild(tr);
-    }
-
-    var hasCacheSplit = (D.comp.cw1 || 0) > 0 || (D.comp.cw5 || 0) > 0;
-    if (hasCacheSplit) {
-      subsetRow("캐시 쓰기 1h", D.comp.cw1 || 0, D.comp.cw || 0);
-      subsetRow("캐시 쓰기 5m", D.comp.cw5 || 0, D.comp.cw || 0);
-      var remainder = (D.comp.cw || 0) - (D.comp.cw1 || 0) - (D.comp.cw5 || 0);
-      var remainderThreshold = Math.max(1000, (D.comp.cw || 0) * 0.001);
-      if (remainder >= remainderThreshold) subsetRow("캐시 쓰기 미분류", remainder, D.comp.cw || 0);
-    }
-    if ((D.comp.th || 0) > 0) {
-      subsetRow("출력 중 thinking", D.comp.th, D.comp.o || 0);
-    }
 
     var cacheShare = pct((D.comp.cr || 0) + (D.comp.cw || 0), total);
     var note =
