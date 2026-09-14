@@ -106,13 +106,13 @@ def parse_ts(raw):
         return None
     y, mo, d, hh, mm, ss, frac, tz = m.groups()
     micro = int((frac or "0").ljust(6, "0"))
-    if tz in (None, "", "Z", "z"):
-        off = timezone.utc
-    else:
-        digits = tz[1:].replace(":", "")
-        delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
-        off = timezone(-delta if tz[0] == "-" else delta)
     try:
+        if tz in (None, "", "Z", "z"):
+            off = timezone.utc
+        else:
+            digits = tz[1:].replace(":", "")
+            delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
+            off = timezone(-delta if tz[0] == "-" else delta)   # ±24시간 이상이면 ValueError
         return datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss), micro, off)
     except ValueError:
         return None
@@ -2025,7 +2025,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var section = document.getElementById("limitSection"), hits = [];
     D.ids.forEach(function (id) {
       (state.machines[id].limit_hits || []).forEach(function (hit) {
-        if (D.from && (hit.timestamp || "").slice(0, 10) < D.from) return;
+        if (D.from && !(hit.timestamp && localDayKey(new Date(hit.timestamp)) >= D.from)) return;   // 기록은 UTC, D.from 은 로컬 날짜
         hits.push({hit:hit, id:id});
       });
     });
@@ -3553,6 +3553,11 @@ def _fingerprint(root):
 def _do_scan(args):
     t0 = time.time()
     payload = None
+    root = Path(args.claude_dir).expanduser() / "projects"
+    try:
+        fp = _fingerprint(root)                # 스캔 전에 찍는다 ― 스캔 중 붙은 기록을 다음 비교가 잡도록
+    except Exception:
+        fp = None
     try:
         payload = scan_local(args)
     except SystemExit as e:
@@ -3561,11 +3566,6 @@ def _do_scan(args):
         print(f"  ! 스캔 중 오류: {e}", file=sys.stderr)
     finally:
         took = time.time() - t0
-        root = Path(args.claude_dir).expanduser() / "projects"
-        try:
-            fp = _fingerprint(root)
-        except Exception:
-            fp = None
         with _scan_lock:
             if payload is not None:
                 payload["scan_seconds"] = round(took, 2)

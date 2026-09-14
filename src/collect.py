@@ -93,13 +93,13 @@ def parse_ts(raw):
         return None
     y, mo, d, hh, mm, ss, frac, tz = m.groups()
     micro = int((frac or "0").ljust(6, "0"))
-    if tz in (None, "", "Z", "z"):
-        off = timezone.utc
-    else:
-        digits = tz[1:].replace(":", "")
-        delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
-        off = timezone(-delta if tz[0] == "-" else delta)
     try:
+        if tz in (None, "", "Z", "z"):
+            off = timezone.utc
+        else:
+            digits = tz[1:].replace(":", "")
+            delta = timedelta(hours=int(digits[:2]), minutes=int(digits[2:4]))
+            off = timezone(-delta if tz[0] == "-" else delta)   # ±24시간 이상이면 ValueError
         return datetime(int(y), int(mo), int(d), int(hh), int(mm), int(ss), micro, off)
     except ValueError:
         return None

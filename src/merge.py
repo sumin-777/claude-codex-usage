@@ -180,17 +180,7 @@ def merge(machines):
         "schema": SCHEMA_VERSION,
         "kind": "merged",
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "machines": [
-            {
-                **m["machine"],
-                "generated_at": m.get("generated_at"),
-                "tz": m.get("tz"),
-                "range": m.get("range"),
-                "totals": m.get("totals"),
-                "plan": m.get("plan"),
-            }
-            for m in machines
-        ],
+        "machines": machines,                  # 대시보드 ingest() 가 머신마다 원본 payload 를 요구한다
         "range": {"first": days[0] if days else None, "last": days[-1] if days else None},
         "totals": totals,
         "streak": {"current": cur, "max": best},

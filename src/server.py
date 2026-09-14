@@ -626,6 +626,11 @@ def _fingerprint(root):
 def _do_scan(args):
     t0 = time.time()
     payload = None
+    root = Path(args.claude_dir).expanduser() / "projects"
+    try:
+        fp = _fingerprint(root)                # 스캔 전에 찍는다 ― 스캔 중 붙은 기록을 다음 비교가 잡도록
+    except Exception:
+        fp = None
     try:
         payload = scan_local(args)
     except SystemExit as e:
@@ -634,11 +639,6 @@ def _do_scan(args):
         print(f"  ! 스캔 중 오류: {e}", file=sys.stderr)
     finally:
         took = time.time() - t0
-        root = Path(args.claude_dir).expanduser() / "projects"
-        try:
-            fp = _fingerprint(root)
-        except Exception:
-            fp = None
         with _scan_lock:
             if payload is not None:
                 payload["scan_seconds"] = round(took, 2)

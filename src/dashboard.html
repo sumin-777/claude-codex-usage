@@ -1105,7 +1105,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var section = document.getElementById("limitSection"), hits = [];
     D.ids.forEach(function (id) {
       (state.machines[id].limit_hits || []).forEach(function (hit) {
-        if (D.from && (hit.timestamp || "").slice(0, 10) < D.from) return;
+        if (D.from && !(hit.timestamp && localDayKey(new Date(hit.timestamp)) >= D.from)) return;   // 기록은 UTC, D.from 은 로컬 날짜
         hits.push({hit:hit, id:id});
       });
     });

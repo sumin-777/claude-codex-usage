@@ -83,7 +83,9 @@ def names_units():
     for number, want in units:
         got = collect.human(number)
         assert got == want, (number, got, want)
-    return "8 project_name + 17 human"
+    assert collect.parse_ts("2026-09-14T00:00:00+99:99") is None
+    assert collect.parse_ts("2026-09-14T00:00:00+09:00").utcoffset() == timedelta(hours=9)
+    return "8 project_name + 17 human + parse_ts offset"
 
 
 def fixture():
@@ -139,7 +141,15 @@ def fixture():
     grown = server.build_payload_incremental(args)
     for key, amount in zip(("i", "o", "cw", "cr"), (extra[0], 7, extra[1], extra[2])):
         assert grown["totals"][key] - incremental["totals"][key] == amount, key
-    return "full = incremental; one-record growth"
+
+    def appending_scan(scan_args):             # 스캔 도중 기록이 붙는 경우
+        with (beta / "main.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record(stamp(0, 16, 0), "beta-main", "msg-mid", "req-mid", extra)) + "\n")
+        return {}
+    server.scan_local = appending_scan
+    server._do_scan(args)
+    assert server._scan["fp"] != server._fingerprint(projects), "mid-scan append must trigger a rescan"
+    return "full = incremental; one-record growth; mid-scan append"
 
 
 def merge_check():
@@ -151,6 +161,7 @@ def merge_check():
     old = {"schema": 2, "machine": {"id": "b", "label": "machine-b"}, "totals": {}, "daily": {},
            "models": {}, "projects": {}, "hours": [], "weekday_hour": []}
     out = merge.merge([merge.normalize_machine(base), merge.normalize_machine(old)])
+    assert all(m.get("schema") in (1, 2) and m["machine"]["id"] for m in out["machines"])   # dashboard ingest() 계약
     kept = out["recent_sessions"]["project"]
     assert [entry["last"][8:10] for entry in kept] == ["14", "13", "12", "11", "10"]
     assert all(entry["machine"] == "machine-a" for entry in kept)
