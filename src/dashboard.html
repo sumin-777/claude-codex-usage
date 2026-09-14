@@ -1591,6 +1591,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     tbl.textContent = "";
     var ids = allMachines();
     document.getElementById("machineNote").textContent = ids.length + "대 연결됨";
+    // 불러온 머신 중 가장 새 수집기보다 낮거나 버전이 없으면 옛 수집기다 (날짜 문자열이라 문자열 비교로 충분)
+    var newestCollector = ids.map(function (id) { return String(state.machines[id].collector || ""); }).sort().pop() || "";
     var head = el("tr");
     ["머신", "최근 추이", "토큰", "비중", "세션", "활성일", "마지막 수집"].forEach(function (h, i) {
       head.appendChild(el("th", i >= 2 && i <= 5 ? "r" : null, h));
@@ -1629,6 +1631,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
           badges.appendChild(el("span", "badge", label));
         });
         box.appendChild(badges);
+      }
+      if (newestCollector && String(M.collector || "") < newestCollector) {
+        box.appendChild(el("div", "stale", "옛 수집기 ― claude-usage.py 를 교체해야 새 항목이 채워집니다"));
       }
       nm.appendChild(box);
       td1.appendChild(nm);

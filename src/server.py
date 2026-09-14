@@ -117,7 +117,7 @@ def load_remote(local_id=None):
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
-PAYLOAD_CACHE_VERSION = 2   # payload 를 만드는 규칙이 바뀌면 올린다 (1 hourly, 2 UUID 폴더의 프로젝트 이름)
+PAYLOAD_CACHE_VERSION = 3   # payload 를 만드는 규칙이 바뀌면 올린다 (1 hourly, 2 UUID 폴더 이름, 3 모든 폴더 cwd 이름·collector)
 
 
 def _cache_path(rel):
@@ -512,6 +512,7 @@ def build_payload_incremental(args):
 
     payload = {
         "schema": SCHEMA_VERSION,
+        "collector": COLLECTOR_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "tz": local_tz(),
         "machine": machine_identity(args.machine),

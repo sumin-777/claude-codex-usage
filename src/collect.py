@@ -117,33 +117,51 @@ def decode_project(dirname):
     return parts[-1] if parts else dirname
 
 
-_UUID_TAIL = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
+COLLECTOR_VERSION = "2026-09-14"
+
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+_FIRST_CWD = {}
+
+
+def first_cwd(path):
+    """파일 앞 20줄의 첫 cwd. 트랜스크립트는 뒤에만 덧붙으니 파일마다 한 번만 읽고 기억한다."""
+    key = str(path)
+    if key not in _FIRST_CWD:
+        found = None
+        try:
+            with open(key, "r", encoding="utf-8", errors="replace") as fh:
+                for _, line in zip(range(20), fh):
+                    m = _CWD_RE.search(line)
+                    if m:
+                        try:
+                            found = json.loads('"%s"' % m.group(1))
+                        except ValueError:
+                            found = None
+                        break
+        except OSError:
+            return None
+        _FIRST_CWD[key] = found
+    return _FIRST_CWD[key]
 
 
 def project_name(root, dirname):
     """
-    원격(SSH) 세션 폴더처럼 이름이 UUID 로 끝나면 경로가 인코딩돼 있지 않다.
-    그때는 각 파일 앞부분의 첫 cwd 중 가장 짧은 경로의 마지막 조각을 쓴다.
+    폴더 이름의 경로 인코딩은 '-'·'_'·한글을 구분하지 못하고, 원격(SSH) 세션 폴더는 UUID 뿐이다.
+    폴더 안 각 세션 파일의 첫 cwd 중 가장 짧은 경로의 마지막 조각을 쓰고, cwd 가 없으면 폴더 이름으로 돌아간다.
     """
-    if not dirname or not _UUID_TAIL.search(dirname):
-        return decode_project(dirname)
     names = []
-    for path in sorted(Path(root, dirname).glob("*.jsonl")):
-        # ponytail: 파일마다 앞 20줄의 첫 cwd 만 본다. 모든 세션이 하위 폴더에서 시작했으면 그 이름이 된다
-        try:
-            with path.open("r", encoding="utf-8", errors="replace") as fh:
-                for _, line in zip(range(20), fh):
-                    m = _CWD_RE.search(line)
-                    if m:
-                        cwd = m.group(1).replace("\\\\", "\\")
-                        cwd = re.split(r"[\\/]\.claude[\\/]worktrees[\\/]", cwd)[0]
-                        parts = [p for p in re.split(r"[\\/]", cwd) if p]
-                        if parts:
-                            names.append((len(parts), parts[-1]))
-                        break
-        except OSError:
-            continue
+    folder = Path(root, dirname) if dirname else None
+    if folder is not None and folder.is_dir():
+        # ponytail: 파일마다 첫 cwd 만 본다. 서로 다른 경로의 끝 이름이 같으면 한 프로젝트로 합쳐진다
+        for path in sorted(folder.glob("*.jsonl")):
+            cwd = first_cwd(path)
+            if not cwd:
+                continue
+            cwd = re.split(r"[\\/]\.claude[\\/]worktrees[\\/]", cwd)[0]
+            parts = [p for p in re.split(r"[\\/]", cwd) if p]
+            if parts:
+                names.append((len(parts), parts[-1]))
     return min(names)[1] if names else decode_project(dirname)
 
 
@@ -732,6 +750,7 @@ def build_payload(args):
 
     payload = {
         "schema": SCHEMA_VERSION,
+        "collector": COLLECTOR_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "tz": local_tz(),
         "machine": machine_identity(args.machine),
@@ -796,10 +815,20 @@ def console_safe(text):
 
 
 def human(n):
-    for unit, div in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
-        if n >= div:
-            return f"{n/div:.1f}{unit}"
-    return str(n)
+    """한국어 단위(천·만·억·조). dashboard.html 의 fmt() 와 같은 규칙."""
+    n = int(round(n or 0))
+    if n < 1000:
+        return str(n)
+    units = ((1e3, "천"), (1e4, "만"), (1e8, "억"), (1e12, "조"))
+    i = len(units) - 1
+    while n < units[i][0]:
+        i -= 1
+    q = n / units[i][0]
+    r = round(q, 2 if q < 10 else 1 if q < 100 else 0)
+    if i + 1 < len(units) and r * units[i][0] >= units[i + 1][0]:
+        i += 1
+        r = round(n / units[i][0], 2)
+    return "{:,.2f}".format(r).rstrip("0").rstrip(".") + units[i][1]
 
 
 def print_summary(p):

@@ -145,6 +145,10 @@ schema 2의 선택 필드 `hourly`, `recent_sessions`, `codex`, `plan`, `limit_h
 증분 스캔의 행 캐시 형식을 바꿨으면 `CACHE_VERSION`(server.py)도 올린다. 안 올리면
 낡은 캐시 행이 그대로 재사용돼 새 필드가 조용히 0 으로 남는다.
 
+수집 JSON 에 필드를 더하거나 수집 규칙(프로젝트 이름 등)을 바꿨으면 `COLLECTOR_VERSION`(collect.py, 날짜)을
+올린다. 대시보드는 불러온 머신 중 가장 새 값보다 낮거나 값이 없는 머신을 "옛 수집기"로 표시한다. payload 를
+만드는 규칙이 바뀌면 `PAYLOAD_CACHE_VERSION`(server.py)도 올린다 ― 안 올리면 파일이 그대로일 때 옛 결과가 재사용된다.
+
 ## 숫자에 대한 태도
 
 - 여기 수치는 **청구 기준도 구독 한도 기준도 아니다.** 그렇게 읽히게 쓰지 마라.
