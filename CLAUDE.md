@@ -135,9 +135,7 @@ Claude Code 세션이 도는 중이면 **두 호출 사이에 새 레코드가 �
 이미 배포된 머신들이 옛 형식을 보내온다. 지금도 schema 1 을 받고, 없는 새 키는
 `normalize_payload_usage()` 가 0 으로 채운다.
 
-schema 2의 선택 필드 `hourly`, `codex`, `plan`, `limit_hits`는 순수 추가 필드다.
-`hourly`와 `codex.hourly`는 최근 8개 로컬 날짜의 시간별 숫자 버킷이며 데이터가
-없으면 생략한다. `codex`는
+schema 2의 선택 필드 `codex`, `plan`, `limit_hits`는 순수 추가 필드다. `codex`는
 숫자와 OpenAI가 기록한 한도·플랜 라벨만, `plan`은 공개 가능한 요금제 라벨만,
 `limit_hits`는 거절 시각·상태와 세션·프로젝트만 담는다. 프롬프트, 코드, 파일 경로,
 이메일, 이름, 계정·조직 ID는 절대 담지 않는다. 세 필드는 데이터가 없으면 생략한다.

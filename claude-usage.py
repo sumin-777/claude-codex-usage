@@ -152,7 +152,7 @@ def normalize_payload_usage(payload):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "hourly", "models", "projects"):
+    for section in ("daily", "models", "projects"):
         buckets = payload.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -162,11 +162,8 @@ def normalize_payload_usage(payload):
                     bucket.setdefault(key, 0)
     codex = payload.get("codex")
     if isinstance(codex, dict):
-        buckets = []
-        for section in ("daily", "hourly"):
-            values = codex.get(section, {})
-            if isinstance(values, dict):
-                buckets += list(values.values())
+        cdaily = codex.get("daily", {})
+        buckets = list(cdaily.values()) if isinstance(cdaily, dict) else []
         for bucket in [codex.get("totals", {})] + buckets:
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
@@ -278,14 +275,13 @@ def codex_bucket(last):
 def parse_codex_file(path, start_off=0, previous_total=None):
     """Codex JSONL 의 완결된 꼬리만 읽는다."""
     daily = {}
-    hourly = {}
     newest = None
     peaks = {}
     off = start_off
     try:
         fh = open(str(path), "rb")
     except OSError:
-        return daily, hourly, previous_total, newest, start_off
+        return daily, previous_total, newest, start_off
     with fh:
         try:
             fh.seek(start_off)
@@ -318,10 +314,7 @@ def parse_codex_file(path, start_off=0, previous_total=None):
             last = info.get("last_token_usage")
             if dt is not None and isinstance(total, dict) and isinstance(last, dict) and total != previous_total:
                 day = dt.astimezone().strftime("%Y-%m-%d")
-                hour = dt.astimezone().strftime("%Y-%m-%dT%H")
-                bucket = codex_bucket(last)
-                add_bucket(daily.setdefault(day, new_bucket()), bucket)
-                add_bucket(hourly.setdefault(hour, new_bucket()), bucket)
+                add_bucket(daily.setdefault(day, new_bucket()), codex_bucket(last))
                 previous_total = total
             limits = payload.get("rate_limits")
             if dt is not None and isinstance(limits, dict):
@@ -342,13 +335,11 @@ def parse_codex_file(path, start_off=0, previous_total=None):
                     newest = {"at": timestamp, "plan": limits.get("plan_type"), "windows": windows}
     if newest is not None and peaks:
         newest["peaks"] = peaks
-    return daily, hourly, previous_total, newest, off
+    return daily, previous_total, newest, off
 
 
 def make_codex_payload(entries, since=None, until=None):
     daily = {}
-    hourly = {}
-    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     newest = None
     peaks = {}
     for entry in entries:
@@ -356,11 +347,6 @@ def make_codex_payload(entries, since=None, until=None):
             if (since and day < since) or (until and day > until):
                 continue
             add_bucket(daily.setdefault(day, new_bucket()), src)
-        for hour, src in entry.get("hourly", {}).items():
-            day = hour[:10]
-            if day < hourly_since or (since and day < since) or (until and day > until):
-                continue
-            add_bucket(hourly.setdefault(hour, new_bucket()), src)
         limit = entry.get("limits")
         if not limit:
             continue
@@ -375,8 +361,6 @@ def make_codex_payload(entries, since=None, until=None):
         add_bucket(totals, b)
     totals["total"] = bucket_total(totals)
     out = {"daily": daily, "totals": totals}
-    if hourly:
-        out["hourly"] = hourly
     if newest is not None:
         # 캐시에 든 원본은 건드리지 않는다. 내부용 peaks 는 내보내지 않고
         # 창마다 그 창의 최고치(peak_percent)만 붙인다.
@@ -399,9 +383,8 @@ def collect_codex(since=None, until=None):
     for base in (root / "sessions", root / "archived_sessions"):
         if base.is_dir():
             for path in sorted(base.rglob("rollout-*.jsonl")):
-                daily, hourly, last, limits, off = parse_codex_file(path)
-                entries.append({"daily": daily, "hourly": hourly, "last": last,
-                                "limits": limits, "off": off})
+                daily, last, limits, off = parse_codex_file(path)
+                entries.append({"daily": daily, "last": last, "limits": limits, "off": off})
     return make_codex_payload(entries, since, until)
 
 
@@ -476,8 +459,6 @@ def iter_records(root, verbose=False):
 
 def aggregate(root, since=None, until=None, verbose=False):
     daily = defaultdict(new_bucket)
-    hourly = defaultdict(new_bucket)
-    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models = defaultdict(new_bucket)
     projects = defaultdict(new_bucket)
     daily_models = defaultdict(lambda: defaultdict(int))
@@ -516,8 +497,6 @@ def aggregate(root, since=None, until=None, verbose=False):
 
         u = rec["usage"]
         add_usage(daily[day], u)
-        if day >= hourly_since:
-            add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
 
@@ -545,7 +524,6 @@ def aggregate(root, since=None, until=None, verbose=False):
 
     return {
         "daily": dict(daily),
-        "hourly": dict(hourly),
         "models": dict(models),
         "projects": dict(projects),
         "daily_models": {d: dict(m) for d, m in daily_models.items()},
@@ -697,8 +675,6 @@ def build_payload(args):
         "hours": agg["hours"],
         "weekday_hour": agg["weekday_hour"],
     }
-    if agg["hourly"]:
-        payload["hourly"] = agg["hourly"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:
@@ -1046,20 +1022,6 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
 .limit-meter .mini { height:8px; margin-top:4px; }
-.week-list { border-top: 1px solid var(--rule); }
-.week-row {
-  display: grid; grid-template-columns: minmax(190px, .8fr) minmax(240px, 1fr) minmax(280px, 1.35fr);
-  gap: 18px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule-soft);
-}
-.week-name { font-weight: 600; }
-.week-name small, .week-detail small { display: block; color: var(--ink-mute); font-size: 11.5px; font-weight: 400; margin-top: 3px; }
-.week-value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.week-controls { display: inline-flex; align-items: center; gap: 6px; margin-top: 7px; }
-.week-controls select, .week-controls input {
-  font: 12px var(--mono); color: var(--ink); background: var(--panel);
-  border: 1px solid var(--rule); border-radius: 5px; padding: 4px 6px;
-}
-@media (max-width: 760px) { .week-row { grid-template-columns: 1fr; gap: 8px; } }
 
 /* ---------- heatmap ---------- */
 .heat { display: grid; grid-template-columns: 26px repeat(24, 1fr); gap: 3px; align-items: center; }
@@ -1117,34 +1079,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   <div class="banner" id="banner" hidden></div>
 
   <div class="stats" id="stats"></div>
-
-  <section id="weekSection">
-    <div class="sec-head">
-      <h2>이번 주 창</h2>
-      <div class="note">도구별 합계 · 서로 합산하지 않음</div>
-    </div>
-    <div class="week-list">
-      <div class="week-row">
-        <div class="week-name">Claude<small>로컬 기록 합계 · 구독 한도 사용률 아님</small>
-          <span class="week-controls">
-            <select id="weekDay" aria-label="Claude 주간 리셋 요일">
-              <option value="0">월</option><option value="1">화</option><option value="2">수</option>
-              <option value="3">목</option><option value="4" selected>금</option><option value="5">토</option>
-              <option value="6">일</option>
-            </select>
-            <input id="weekTime" type="time" value="15:00" aria-label="Claude 주간 리셋 시각">
-          </span>
-        </div>
-        <div class="week-value" id="claudeWeekValue">—</div>
-        <div class="week-detail" id="claudeWeekDetail">—</div>
-      </div>
-      <div class="week-row">
-        <div class="week-name">Codex<small>로그에 기록된 주간 창</small></div>
-        <div class="week-value" id="codexWeekValue">—</div>
-        <div class="week-detail" id="codexWeekDetail">—</div>
-      </div>
-    </div>
-  </section>
 
   <section id="codexSection" hidden>
     <div class="sec-head">
@@ -1334,18 +1268,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return n.getFullYear() + "-" +
       ("0" + (n.getMonth() + 1)).slice(-2) + "-" +
       ("0" + n.getDate()).slice(-2);   // 사용자가 보는 '오늘'은 로컬 기준
-  }
-  function weeklyWindow(anchorWeekday, anchorHour, anchorMinute, currentDay, currentHour, currentMinute) {
-    var delta = (weekdayOf(currentDay) - anchorWeekday + 7) % 7;
-    if (delta === 0 && currentHour * 60 + currentMinute < anchorHour * 60 + anchorMinute) delta = 7;
-    var startDay = dayAdd(currentDay, -delta);
-    var endDay = dayAdd(startDay, 7);
-    return {
-      start: { day: startDay, hour: anchorHour, minute: anchorMinute },
-      end: { day: endDay, hour: anchorHour, minute: anchorMinute },
-      hoursRemaining: (dayParse(endDay) - dayParse(currentDay)) / 3600000 +
-        anchorHour - currentHour + (anchorMinute - currentMinute) / 60
-    };
   }
   function relDays(iso) {
     if (!iso) return null;
@@ -1563,7 +1485,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     renderHeader(D);
     renderChips();
     renderStats(D);
-    renderWeek(D);
     renderCodex(D);
     renderLimitHits(D);
     renderDaily(D);
@@ -1676,98 +1597,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       if (it[2]) s.appendChild(el("span", "u", it[2]));
       box.appendChild(s);
     });
-  }
-
-  function two(n) { return ("0" + n).slice(-2); }
-
-  function windowPoint(p) { return p.day + "T" + two(p.hour) + ":" + two(p.minute); }
-
-  function resetText(calc) {
-    var md = calc.end.day.split("-");
-    var left = Math.max(0, Math.floor(calc.hoursRemaining));
-    return "다음 리셋 " + Number(md[1]) + "/" + Number(md[2]) + "(" +
-      WD[weekdayOf(calc.end.day)] + "요일) " + two(calc.end.hour) + ":" + two(calc.end.minute) +
-      " · " + Math.floor(left / 24) + "일 " + left % 24 + "시간 남음";
-  }
-
-  function sumHourly(ids, pick, start, end) {
-    var out = {i:0, o:0, cw:0, cr:0, m:0, excluded:0};
-    ids.forEach(function (id) {
-      var map = pick(state.machines[id]);
-      if (map === false) return;
-      if (!map || typeof map !== "object") { out.excluded++; return; }
-      Object.keys(map).forEach(function (hour) {
-        var point = hour + ":00";
-        if (point < start || (end && point >= end)) return;
-        var b = map[hour] || {};
-        ["i","o","cw","cr","m"].forEach(function (k) { out[k] += b[k] || 0; });
-      });
-    });
-    return out;
-  }
-
-  function epochHour(epoch) {
-    var d = new Date(epoch * 1000);
-    if (isNaN(d.getTime())) return null;
-    return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) +
-      "T" + two(d.getHours());
-  }
-
-  // 리셋 시각이 이미 지났으면 주 단위로 굴려 지금이 속한 창의 리셋 시각을 돌려준다.
-  // 루프는 최대 520주(10년)에서 멈춘다.
-  function rollWeekly(resetEpoch, nowMs) {
-    var r = resetEpoch, guard = 0;
-    while (r * 1000 <= nowMs && guard++ < 520) r += 604800;
-    return r;
-  }
-
-  function renderWeek(D) {
-    var now = new Date();
-    var weekday = Number(document.getElementById("weekDay").value);
-    var hm = (document.getElementById("weekTime").value || "15:00").split(":");
-    var calc = weeklyWindow(weekday, Number(hm[0]), Number(hm[1]), todayKey(), now.getHours(), now.getMinutes());
-    var claude = sumHourly(D.ids, function (M) { return M.hourly; },
-      windowPoint(calc.start), windowPoint(calc.end));
-    var claudeTotal = claude.i + claude.o + claude.cw + claude.cr;
-    document.getElementById("claudeWeekValue").textContent = fmt(claudeTotal) + " tokens · 캐시 읽기 " +
-      pct(claude.cr, claudeTotal).toFixed(1) + "% · 메시지 " + comma(claude.m);
-    document.getElementById("claudeWeekDetail").textContent = resetText(calc) +
-      (claude.excluded ? " · 시간 단위 데이터 없는 머신 " + claude.excluded + "대 제외" : "");
-
-    var newest = null, weekly = null;
-    D.ids.forEach(function (id) {
-      var limits = (state.machines[id].codex || {}).limits;
-      if (!limits) return;
-      (limits.windows || []).forEach(function (w) {
-        if (Number(w.window_minutes) === 10080 && (!newest || (limits.at || "") > (newest.at || ""))) {
-          newest = limits; weekly = w;
-        }
-      });
-    });
-    if (!weekly || !Number(weekly.resets_at)) {
-      document.getElementById("codexWeekValue").textContent = "주간 창 정보 없음";
-      document.getElementById("codexWeekDetail").textContent = "";
-      return;
-    }
-    // 마지막 기록의 리셋 시각이 이미 지났으면(리셋 뒤로 Codex 를 안 쓴 경우) 주 단위로 굴려
-    // 지금이 속한 창을 찾는다. 그 기록의 사용률은 지난 창 값이라 현재 값처럼 보여주지 않는다.
-    var resetAt = rollWeekly(Number(weekly.resets_at), now.getTime());
-    var current = resetAt === Number(weekly.resets_at);
-    // 끝 경계는 리셋 시(hour)의 다음 시각까지 포함한다 ― 지금이 리셋과 같은 시간대여도 그 시간 사용분이 빠지지 않게.
-    var codex = sumHourly(D.ids, function (M) { return M.codex ? M.codex.hourly : false; },
-      epochHour(resetAt - 10080 * 60) + ":00", epochHour(resetAt + 3600) + ":00");
-    var codexTotal = codex.i + codex.o + codex.cw + codex.cr;
-    var latest = Number(weekly.used_percent || 0);
-    var peak = Math.max(Number(weekly.peak_percent || 0), latest);
-    document.getElementById("codexWeekValue").textContent = fmt(codexTotal) + " tokens · 요청 " +
-      comma(codex.m) + (current ? " · 최고 " + peak.toFixed(1) + "% · 최근 " + latest.toFixed(1) + "%"
-        : " · 이번 창 사용률 기록 없음");
-    var left = Math.max(0, (resetAt * 1000 - now.getTime()) / 3600000);
-    var detail = document.getElementById("codexWeekDetail");
-    detail.textContent = "다음 리셋 " + localTime(resetAt) + " · " + Math.floor(left / 24) + "일 " +
-      Math.floor(left) % 24 + "시간 남음" +
-      (codex.excluded ? " · 시간 단위 데이터 없는 머신 " + codex.excluded + "대 제외" : "");
-    detail.appendChild(el("small", null, "시간 단위 집계라 경계에서 1시간 미만의 오차가 날 수 있습니다."));
   }
 
   function windowName(minutes) {
@@ -2494,7 +2323,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function normalizePayload(payload) {
     normalizeBucket(payload.totals);
-    ["daily", "hourly", "models", "projects"].forEach(function (group) {
+    ["daily", "models", "projects"].forEach(function (group) {
       Object.keys(payload[group] || {}).forEach(function (key) {
         normalizeBucket(payload[group][key]);
       });
@@ -2503,9 +2332,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       normalizeBucket(payload.codex.totals);
       Object.keys(payload.codex.daily || {}).forEach(function (day) {
         normalizeBucket(payload.codex.daily[day]);
-      });
-      Object.keys(payload.codex.hourly || {}).forEach(function (hour) {
-        normalizeBucket(payload.codex.hourly[hour]);
       });
     }
     if (!Array.isArray(payload.limit_hits)) payload.limit_hits = [];
@@ -2560,23 +2386,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       render();
     };
   });
-
-  var weekDay = document.getElementById("weekDay"), weekTime = document.getElementById("weekTime");
-  try {
-    var savedDay = localStorage.getItem("claude-usage-weekday");
-    var savedTime = localStorage.getItem("claude-usage-weektime");
-    if (/^[0-6]$/.test(savedDay || "")) weekDay.value = savedDay;
-    if (/^([01]\d|2[0-3]):[0-5]\d$/.test(savedTime || "")) weekTime.value = savedTime;
-  } catch (e) {}
-  function saveWeekAnchor() {
-    try {
-      localStorage.setItem("claude-usage-weekday", weekDay.value);
-      localStorage.setItem("claude-usage-weektime", weekTime.value);
-    } catch (e) {}
-    render();
-  }
-  weekDay.onchange = saveWeekAnchor;
-  weekTime.onchange = saveWeekAnchor;
 
   var fi = document.getElementById("fileInput");
   fi.onchange = function () { readFiles(fi.files); fi.value = ""; };
@@ -2801,7 +2610,7 @@ def load_remote(local_id=None):
 
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 3
-CODEX_CACHE_VERSION = 2
+CODEX_CACHE_VERSION = 1
 
 
 def _cache_path(rel):
@@ -2994,12 +2803,10 @@ def _codex_entries():
             if entry and entry.get("sz") == size and entry.get("mt") == mtime:
                 continue
             if entry and size >= entry.get("off", 0) and entry.get("off", 0) > 0:
-                daily, hourly, last, limits, off = parse_codex_file(
+                daily, last, limits, off = parse_codex_file(
                     path, entry["off"], entry.get("last"))
                 for day, bucket in daily.items():
                     add_bucket(entry.setdefault("daily", {}).setdefault(day, new_bucket()), bucket)
-                for hour, bucket in hourly.items():
-                    add_bucket(entry.setdefault("hourly", {}).setdefault(hour, new_bucket()), bucket)
                 entry["last"], entry["off"] = last, off
                 if limits:
                     # 꼬리만 다시 읽어도 창별 최고치는 잃지 않게 합친다.
@@ -3013,9 +2820,9 @@ def _codex_entries():
                         entry["limits"]["peaks"] = peaks
                 entry["sz"], entry["mt"] = size, mtime
             else:
-                daily, hourly, last, limits, off = parse_codex_file(path)
+                daily, last, limits, off = parse_codex_file(path)
                 entry = {"sz": size, "mt": mtime, "off": off, "last": last,
-                         "daily": daily, "hourly": hourly, "limits": limits}
+                         "daily": daily, "limits": limits}
             files[rel] = entry
             dirty = True
     for gone in [name for name in files if name not in live]:
@@ -3043,7 +2850,7 @@ def _load_payload_cache(fp, args):
     except (OSError, ValueError):
         return None
     if (d.get("fp") != list(fp) or d.get("schema_v") != SCHEMA_VERSION or
-            d.get("cache_v") != CACHE_VERSION or d.get("hourly_v") != 1):
+            d.get("cache_v") != CACHE_VERSION):
         return None
     pl = d.get("payload")
     if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
@@ -3059,7 +2866,7 @@ def _save_payload_cache(fp, payload, args):
         tmp = PAYLOAD_CACHE.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             _json.dump({"fp": list(fp), "schema_v": SCHEMA_VERSION,
-                        "cache_v": CACHE_VERSION, "hourly_v": 1, "payload": payload},
+                        "cache_v": CACHE_VERSION, "payload": payload},
                        f, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(PAYLOAD_CACHE)
     except OSError:
@@ -3081,8 +2888,6 @@ def build_payload_incremental(args):
         return hit
 
     daily = {}
-    hourly = {}
-    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models_agg = {}
     projects_agg = {}
     daily_models = {}
@@ -3140,8 +2945,6 @@ def build_payload_incremental(args):
                 daily[day] = new_bucket()
                 daily_sessions[day] = set()
             add_usage(daily[day], u)
-            if day >= hourly_since:
-                add_usage(hourly.setdefault("%sT%02d" % (day, r[2]), new_bucket()), u)
             if model not in models_agg:
                 models_agg[model] = new_bucket()
             add_usage(models_agg[model], u)
@@ -3212,8 +3015,6 @@ def build_payload_incremental(args):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
-    if hourly:
-        payload["hourly"] = hourly
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost
