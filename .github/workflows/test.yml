@@ -1,0 +1,39 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python36:
+    # 배포 대상에 Python 3.6 서버가 있다. 개발 PC 에는 3.6 이 없어서 여기서 진짜 3.6 으로 확인한다.
+    runs-on: ubuntu-latest
+    container: python:3.6-slim
+    env:
+      # 3.6 은 C 로케일에서 한글 출력이 UnicodeEncodeError 로 죽는다(3.7 부터 자동 보정)
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v4
+      - name: compile deployed files with Python 3.6
+        run: python -m py_compile claude-usage.py src/collect.py src/merge.py
+      - name: tests on Python 3.6
+        run: python tests/run.py --no-js
+
+  build-and-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: claude-usage.py is the committed build of src/
+        run: |
+          python build.py
+          git diff --exit-code -- claude-usage.py
+      - name: tests with dashboard JS in 4 timezones
+        run: python tests/run.py

@@ -61,11 +61,9 @@ await browser.newPage({ timezoneId: 'Asia/Seoul' })
 - `str | None` 같은 3.10 어노테이션
 - 대입 표현식(`:=`), f-string `=` 지정자
 
-확인:
-
-```bash
-pip install vermin && vermin -t=3.6 claude-usage.py
-```
+확인: `python tests/run.py` 는 3.6 이면 실제로 컴파일하고, 그 밖의 버전에서는 AST 로 흉내만 낸다
+(3.12 는 3.6 에서 안 되는 문법도 받아준다). 진짜 3.6 확인은 GitHub Actions 의 python:3.6 컨테이너가 매 push 마다 한다.
+로컬에서 더 보고 싶으면 `pip install vermin && vermin -t=3.6 claude-usage.py`.
 
 ### 4. `src/dashboard.html` 에 삼중따옴표(`"""`)를 넣지 마라
 
@@ -120,7 +118,7 @@ Claude Code 세션이 도는 중이면 **두 호출 사이에 새 레코드가 �
 
 반대로 **살아 있는 인스턴스는 누가 띄웠든 끈다.** `--daemon` / `--stop` 은 `--port` 를
 줘도 `server.json` 에 기록된 인스턴스를 잡는다. 사용자가 띄워 둔 데몬(외부 수신 포함)을
-검증하다가 끄지 않도록 아래 체크리스트 5번을 지켜라.
+검증하다가 끄지 않도록 아래 체크리스트 4번을 지켜라.
 
 ## 데이터 규약
 
@@ -174,10 +172,9 @@ python3 claude-usage.py --diag
 코드를 고쳤으면:
 
 1. `python3 build.py` — 빌드 통과
-2. `vermin -t=3.6 claude-usage.py` — 3.6 유지
-3. 증분 vs 전체 파싱 일치 (위 8번)
-4. 타임존 4곳에서 기간 버튼 전부 (위 2번)
-5. `--daemon` → `--status` → `--stop` 왕복. **먼저 `--status` 를 보고 떠 있는 인스턴스가
+2. `python tests/run.py` — 3.6 문법(3.6 실컴파일, 그 외 AST 최선 확인), project_name/human 한글 단위, 합성 트랜스크립트 전체=증분·1건 증가, hourly 합산 포함 병합, Node 가능 시 dashboard.html 함수 타임존 4곳을 검사. GitHub Actions도 매 push마다 python:3.6 컨테이너에서 같은 스크립트를 돌린다.
+3. 타임존 4곳에서 기간 버튼 전부 (위 2번)
+4. `--daemon` → `--status` → `--stop` 왕복. **먼저 `--status` 를 보고 떠 있는 인스턴스가
    있으면 건너뛴다** — 사용자 데몬을 끄게 된다(위 9번). `--stop` 로직만 볼 거면 `PIDFILE` 을
    임시 경로로 바꿔치고 가짜 프로세스만 대상으로 테스트한다.
-6. 라이트/다크 양쪽 렌더 확인
+5. 라이트/다크 양쪽 렌더 확인

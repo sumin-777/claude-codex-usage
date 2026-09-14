@@ -579,7 +579,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       ["claude-fable-5", 0.12],
       ["claude-haiku-4-5-20251001", 0.08]
     ];
-    var projects = ["moonlog", "bookapp", "api-gateway", "scratch", "etl-jobs"];
+    var projects = ["moonlog", "photo-app", "api-gateway", "scratch", "etl-jobs"];
     var today = todayKey();
     return specs.map(function (s) {
       var daily = {}, dailyModels = {}, mAgg = {}, pAgg = {}, hours = new Array(24).fill(0);
@@ -623,15 +623,54 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       tot.total = tot.i + tot.o + tot.cw + tot.cr;
       tot.sessions = sessions;
       tot.active_days = Object.keys(daily).length;
-      return {
+
+      // 예시에도 시간별·최근 세션·Codex 를 채워 새 섹션이 비어 보이지 않게 한다
+      var hourly = {}, recent = {}, nowMs = Date.now(), weekAgo = dayAdd(today, -7);
+      Object.keys(daily).forEach(function (d3) {
+        if (d3 < weekAgo) return;
+        s.hours.forEach(function (hh) {
+          var hb = {};
+          ["i","o","cw","cr","cw1","cw5","th","m"].forEach(function (k3) {
+            hb[k3] = Math.round(daily[d3][k3] / s.hours.length);
+          });
+          hourly[d3 + "T" + ("0" + hh).slice(-2)] = hb;
+        });
+      });
+      Object.keys(pAgg).forEach(function (pn2) {
+        if (pAgg[pn2].last < weekAgo) return;
+        var list = [], at = nowMs - Math.floor(rnd() * 6) * 3600000;
+        for (var r = 0, cnt = 1 + Math.floor(rnd() * 3); r < cnt; r++) {
+          list.push({ last: new Date(at).toISOString(), ctx: Math.round(60000 + rnd() * 840000), m: 20 + Math.floor(rnd() * 400) });
+          at -= Math.round((2 + rnd() * 30) * 3600000);
+        }
+        recent[pn2] = list;
+      });
+      var out = {
         schema: 2, sample: true,
         generated_at: new Date(Date.now() - Math.floor(rnd() * 5) * 3600000).toISOString(),
         tz: "Asia/Seoul",
         machine: { id: s.id, label: s.label, hostname: s.id, os: s.os },
         range: { first: first, last: today },
         totals: tot, daily: daily, daily_models: dailyModels,
-        models: mAgg, projects: pAgg, hours: hours, weekday_hour: wh
+        models: mAgg, projects: pAgg, hours: hours, weekday_hour: wh,
+        hourly: hourly, recent_sessions: recent
       };
+      if (s.id === "sample-a") {
+        var cdaily = {}, ctot = { i: 0, o: 0, cw: 0, cr: 0, cw1: 0, cw5: 0, th: 0, m: 0 };
+        for (var cd = 30; cd >= 0; cd--) {
+          if (rnd() < 0.3) continue;
+          var creq = 20 + Math.floor(rnd() * 180);
+          var cb = { i: creq * 900, o: creq * 350, cw: 0, cr: creq * 21000, cw1: 0, cw5: 0, th: creq * 140, m: creq };
+          cdaily[dayAdd(today, -cd)] = cb;
+          Object.keys(ctot).forEach(function (k4) { ctot[k4] += cb[k4]; });
+        }
+        ctot.total = ctot.i + ctot.o + ctot.cw + ctot.cr;
+        out.codex = { daily: cdaily, totals: ctot, limits: {
+          at: new Date(nowMs - 1800000).toISOString(), plan: "plus",
+          windows: [{ window_minutes: 10080, used_percent: 23, peak_percent: 31,
+                      resets_at: Math.floor(nowMs / 1000) + 3 * 86400 }] } };
+      }
+      return out;
     });
   }
 
