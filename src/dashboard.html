@@ -180,6 +180,7 @@ summary.sec-head h2::before { content: "▸ "; color: var(--ink-mute); }
 details[open] > summary.sec-head h2::before { content: "▾ "; }
 
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; }
+.grid2 > * { min-width: 0; }   /* 그리드 칸이 안쪽 표·히트맵 폭만큼 벌어지지 않게 ― 넘치면 각자 스크롤 */
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; gap: 30px; } }
 
 /* ---------- charts ---------- */
