@@ -42,6 +42,7 @@ Claude의 `message.usage`와 한도 거절 표시, Codex의 `token_count` 이벤
 | `source.root` | 트랜스크립트 디렉터리의 절대경로. **사용자 계정명이 포함된다** (`C:\Users\alice\.claude\projects`) |
 | `projects` | 프로젝트 이름. 경로의 마지막 조각만 남는다 (`-home-alice-work-myapp` → `myapp`) |
 | `tz` | 로컬 타임존 |
+| `hourly` | Claude의 최근 8개 로컬 날짜 시간별 토큰·메시지 수치. 데이터가 없으면 생략하며 대화 내용은 포함하지 않는다 |
 | `codex` | Codex 토큰 수치, 요청 수, OpenAI가 기록한 한도 백분율·리셋 시각·플랜 라벨 |
 | `plan` | Claude 플랜·한도 등급·추가 사용 여부 등 요금제 라벨. 이메일·이름·계정/조직 ID는 절대 담지 않는다 |
 | `limit_hits` | Claude 요청이 한도에 걸린 시각·종류·리셋·상태와 해당 세션 ID·프로젝트 |
@@ -262,6 +263,7 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=https://<collector>/v1/metrics
   "totals":  { "i":0, "o":0, "cw":0, "cr":0, "cw1":0, "cw5":0, "th":0, "m":0, "total":0,
                 "sessions":0, "active_days":0 },
   "daily":   { "2026-09-10": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0,"s":0 } },
+  "hourly":  { "2026-09-10T14": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0 } },
   "daily_models": { "2026-09-10": { "claude-opus-…": 0 } },
   "models":  { "claude-opus-…": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0 } },
   "projects":{ "myapp": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0,"last":"2026-09-10" } },

@@ -32,7 +32,7 @@ def normalize_machine(d):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "models", "projects"):
+    for section in ("daily", "hourly", "models", "projects"):
         buckets = d.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -66,6 +66,7 @@ def load_machines(paths):
 
 def merge(machines):
     daily = defaultdict(dict)
+    hourly = defaultdict(dict)
     daily_by_machine = defaultdict(dict)
     models = defaultdict(dict)
     projects = defaultdict(dict)
@@ -86,6 +87,8 @@ def merge(machines):
                 daily_by_machine[day].get(label, 0)
                 + sum(b.get(k, 0) for k in ("i", "o", "cw", "cr"))
             )
+        for hour, b in d.get("hourly", {}).items():
+            merge_bucket(hourly[hour], b)
         for name, b in d.get("models", {}).items():
             merge_bucket(models[name], b)
         for name, b in d.get("projects", {}).items():
@@ -158,6 +161,8 @@ def merge(machines):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
+    if hourly:
+        out["hourly"] = dict(hourly)
     if codex_daily or codex_limits:
         codex_totals = {k: 0 for k in KEYS}
         for b in codex_daily.values():

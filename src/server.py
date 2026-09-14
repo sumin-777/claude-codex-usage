@@ -356,7 +356,7 @@ def _load_payload_cache(fp, args):
     except (OSError, ValueError):
         return None
     if (d.get("fp") != list(fp) or d.get("schema_v") != SCHEMA_VERSION or
-            d.get("cache_v") != CACHE_VERSION):
+            d.get("cache_v") != CACHE_VERSION or d.get("hourly_v") != 1):
         return None
     pl = d.get("payload")
     if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
@@ -372,7 +372,7 @@ def _save_payload_cache(fp, payload, args):
         tmp = PAYLOAD_CACHE.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             _json.dump({"fp": list(fp), "schema_v": SCHEMA_VERSION,
-                        "cache_v": CACHE_VERSION, "payload": payload},
+                        "cache_v": CACHE_VERSION, "hourly_v": 1, "payload": payload},
                        f, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(PAYLOAD_CACHE)
     except OSError:
@@ -394,6 +394,8 @@ def build_payload_incremental(args):
         return hit
 
     daily = {}
+    hourly = {}
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models_agg = {}
     projects_agg = {}
     daily_models = {}
@@ -451,6 +453,8 @@ def build_payload_incremental(args):
                 daily[day] = new_bucket()
                 daily_sessions[day] = set()
             add_usage(daily[day], u)
+            if day >= hourly_since:
+                add_usage(hourly.setdefault("%sT%02d" % (day, r[2]), new_bucket()), u)
             if model not in models_agg:
                 models_agg[model] = new_bucket()
             add_usage(models_agg[model], u)
@@ -521,6 +525,8 @@ def build_payload_incremental(args):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
+    if hourly:
+        payload["hourly"] = hourly
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost

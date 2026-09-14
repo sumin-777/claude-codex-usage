@@ -139,7 +139,7 @@ def normalize_payload_usage(payload):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "models", "projects"):
+    for section in ("daily", "hourly", "models", "projects"):
         buckets = payload.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -446,6 +446,8 @@ def iter_records(root, verbose=False):
 
 def aggregate(root, since=None, until=None, verbose=False):
     daily = defaultdict(new_bucket)
+    hourly = defaultdict(new_bucket)
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models = defaultdict(new_bucket)
     projects = defaultdict(new_bucket)
     daily_models = defaultdict(lambda: defaultdict(int))
@@ -484,6 +486,8 @@ def aggregate(root, since=None, until=None, verbose=False):
 
         u = rec["usage"]
         add_usage(daily[day], u)
+        if day >= hourly_since:
+            add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
 
@@ -511,6 +515,7 @@ def aggregate(root, since=None, until=None, verbose=False):
 
     return {
         "daily": dict(daily),
+        "hourly": dict(hourly),
         "models": dict(models),
         "projects": dict(projects),
         "daily_models": {d: dict(m) for d, m in daily_models.items()},
@@ -662,6 +667,8 @@ def build_payload(args):
         "hours": agg["hours"],
         "weekday_hour": agg["weekday_hour"],
     }
+    if agg["hourly"]:
+        payload["hourly"] = agg["hourly"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:

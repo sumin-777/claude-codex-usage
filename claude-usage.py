@@ -152,7 +152,7 @@ def normalize_payload_usage(payload):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "models", "projects"):
+    for section in ("daily", "hourly", "models", "projects"):
         buckets = payload.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -459,6 +459,8 @@ def iter_records(root, verbose=False):
 
 def aggregate(root, since=None, until=None, verbose=False):
     daily = defaultdict(new_bucket)
+    hourly = defaultdict(new_bucket)
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models = defaultdict(new_bucket)
     projects = defaultdict(new_bucket)
     daily_models = defaultdict(lambda: defaultdict(int))
@@ -497,6 +499,8 @@ def aggregate(root, since=None, until=None, verbose=False):
 
         u = rec["usage"]
         add_usage(daily[day], u)
+        if day >= hourly_since:
+            add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
 
@@ -524,6 +528,7 @@ def aggregate(root, since=None, until=None, verbose=False):
 
     return {
         "daily": dict(daily),
+        "hourly": dict(hourly),
         "models": dict(models),
         "projects": dict(projects),
         "daily_models": {d: dict(m) for d, m in daily_models.items()},
@@ -675,6 +680,8 @@ def build_payload(args):
         "hours": agg["hours"],
         "weekday_hour": agg["weekday_hour"],
     }
+    if agg["hourly"]:
+        payload["hourly"] = agg["hourly"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:
@@ -1026,6 +1033,10 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
 .limit-meter .mini { height:8px; margin-top:4px; }
+.claude-week-controls { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:8px 0 14px; color:var(--ink-mute); font-size:12px; }
+.claude-week-controls input, .claude-week-controls select { font:11.5px var(--mono); color:var(--ink); background:var(--panel); border:1px solid var(--rule); border-radius:6px; padding:5px 7px; }
+.claude-week-controls input { width:58px; }
+details.fold > summary { cursor:pointer; font-size:12px; color:var(--ink-mute); margin:10px 0 6px; }
 
 /* ---------- heatmap ---------- */
 .heat { display: grid; grid-template-columns: 26px repeat(24, 1fr); gap: 3px; align-items: center; }
@@ -1089,9 +1100,24 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <h2>Claude · Codex 사용량</h2>
       <div class="note" id="codexNote"></div>
     </div>
+    <div class="limit-meter" id="claudeWeeklyMeter">
+      <div id="claudeWeeklyText"></div>
+      <div class="mini"><i id="claudeWeeklyFill"></i></div>
+    </div>
+    <div class="claude-week-controls">
+      <label for="claudeWeeklyPct">앱 %</label>
+      <input id="claudeWeeklyPct" type="number" min="0" max="100" step="1" inputmode="numeric">
+      <button class="btn" id="claudeWeeklySave" type="button">저장</button>
+      <select id="claudeResetDow" aria-label="Claude 주간 리셋 요일"></select>
+      <select id="claudeResetHour" aria-label="Claude 주간 리셋 시각"></select>
+      <button class="btn" id="claudeWeeklyClear" type="button">보정 지우기</button>
+    </div>
     <div id="codexLimits"></div>
-    <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
-    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 한도 %는 서버에서만 조회되고 로컬 기록에 남지 않아 여기서는 표시하지 않습니다 — Claude 앱의 사용량 화면에서 확인하세요.</p>
+    <details class="fold">
+      <summary>토큰 표</summary>
+      <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
+    </details>
+    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
   </section>
 
   <section>
@@ -1218,6 +1244,31 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   var state = { machines: {}, off: {}, range: "all", sample: true, db: null,
                dirty: {}, scanning: false, scanElapsed: 0 };
+  var CLAUDE_WEEKLY_KEY = "cu.claudeWeekly";
+  var claudeWeekly = {resetDow:4, resetHour:15, calibrations:[]};
+
+  function loadClaudeWeekly() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(CLAUDE_WEEKLY_KEY) || "null");
+      if (!saved || typeof saved !== "object") return;
+      var dow = Number(saved.resetDow), hour = Number(saved.resetHour);
+      if (dow >= 0 && dow <= 6 && Math.floor(dow) === dow) claudeWeekly.resetDow = dow;
+      if (hour >= 0 && hour <= 23 && Math.floor(hour) === hour) claudeWeekly.resetHour = hour;
+      if (Array.isArray(saved.calibrations)) {
+        claudeWeekly.calibrations = saved.calibrations.filter(function (cal) {
+          var at = Number(cal && cal.at), pct = Number(cal && cal.pct);
+          return at > 0 && isFinite(at) && pct >= 0 && pct <= 100 && Math.floor(pct) === pct;
+        }).map(function (cal) { return {at:Number(cal.at), pct:Number(cal.pct)}; });
+      }
+    } catch (e) {}
+  }
+
+  function saveClaudeWeeklySettings() {
+    try { localStorage.setItem(CLAUDE_WEEKLY_KEY, JSON.stringify(claudeWeekly)); }
+    catch (e) {}
+  }
+
+  loadClaudeWeekly();
 
   // ------------------------------------------------------------ formatting
   function fmt(n) {
@@ -1619,6 +1670,98 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
   }
 
+  function two(n) { return ("0" + n).slice(-2); }
+
+  function localDayKey(d) {
+    return dayKey(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
+  }
+
+  function hourKey(d) { return localDayKey(d) + "T" + two(d.getHours()); }
+
+  function claudeWindowStart(now, resetDow, resetHour) {
+    var day = localDayKey(now);
+    var delta = (weekdayOf(day) - resetDow + 7) % 7;
+    if (delta === 0 && now.getHours() < resetHour) delta = 7;
+    return dayAdd(day, -delta) + "T" + two(resetHour);
+  }
+
+  // 상대 가격 비율이며 모델 가중치는 무시한다. 절대 척도는 보정값에서 온다.
+  function claudeBucketUnits(b) {
+    b = b || {};
+    var cw = Number(b.cw) || 0, cw1 = Number(b.cw1) || 0, cw5 = Number(b.cw5) || 0;
+    return (Number(b.i) || 0) + (Number(b.o) || 0) * 5 + cw5 * 1.25 + cw1 * 2 +
+      Math.max(0, cw - cw1 - cw5) * 1.25 + (Number(b.cr) || 0) * 0.1;
+  }
+
+  function claudeUnits(startKey, endKey) {
+    var total = 0;
+    Object.keys(state.machines).forEach(function (id) {
+      var hourly = state.machines[id].hourly;
+      if (!hourly || typeof hourly !== "object") return;
+      Object.keys(hourly).forEach(function (key) {
+        if (key >= startKey && key <= endKey) total += claudeBucketUnits(hourly[key]);
+      });
+    });
+    return total;
+  }
+
+  function median(values) {
+    var xs = values.slice().sort(function (a, b) { return a - b; });
+    var middle = Math.floor(xs.length / 2);
+    return xs.length % 2 ? xs[middle] : (xs[middle - 1] + xs[middle]) / 2;
+  }
+
+  function estimateClaudeWeekly(now, settings) {
+    var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
+    var current = hourKey(now), oldest = null, mids = [], los = [], his = [], valid = [];
+    Object.keys(state.machines).forEach(function (id) {
+      var hourly = state.machines[id].hourly;
+      if (!hourly || typeof hourly !== "object") return;
+      Object.keys(hourly).forEach(function (key) { if (!oldest || key < oldest) oldest = key; });
+    });
+    (settings.calibrations || []).forEach(function (cal) {
+      var at = new Date(Number(cal.at)), pct = Number(cal.pct);
+      if (isNaN(at.getTime())) return;
+      var calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
+      if (!oldest || calStart < oldest) return;
+      var units = claudeUnits(calStart, hourKey(at));
+      if (units <= 0 || pct <= 0) return;
+      mids.push(units / pct);
+      los.push(units / (pct + 0.5));
+      his.push(units / Math.max(pct - 0.5, 0.5));
+      valid.push(cal);
+    });
+    var used = claudeUnits(start, current);
+    return {
+      startKey: start,
+      endKey: current,
+      nextResetKey: dayAdd(start.slice(0, 10), 7) + "T" + two(settings.resetHour),
+      units: used,
+      estimate: mids.length ? used / median(mids) : null,
+      low: mids.length ? used / Math.max.apply(null, his) : null,
+      high: mids.length ? used / Math.min.apply(null, los) : null,
+      calibrations: valid
+    };
+  }
+
+  function renderClaudeWeekly() {
+    var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
+    var result;
+    try { result = estimateClaudeWeekly(new Date(), claudeWeekly); }
+    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(new Date(), 4, 15), calibrations:[]}; }
+    var reset = localTime(new Date(result.nextResetKey + ":00:00"));
+    if (result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high)) {
+      var last = result.calibrations.slice().sort(function (a, b) { return a.at - b.at; }).pop();
+      text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "% (" + Math.round(result.low) + "~" +
+        Math.round(result.high) + "%) · 리셋 " + reset + " · 보정 " + result.calibrations.length +
+        "회(마지막 " + localTime(new Date(last.at)) + " " + last.pct + "%) · 로컬 기록 추정";
+      fill.style.width = Math.max(0, Math.min(100, result.estimate)) + "%";
+    } else {
+      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
+      fill.style.width = "0%";
+    }
+  }
+
   function renderCodex(D) {
     var section = document.getElementById("codexSection");
     var totals = {i:0, cr:0, cw:0, o:0, th:0, m:0}, newest = null, newestId = null;
@@ -1633,9 +1776,19 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       var l = C.limits;
       if (l && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
     });
-    var has = totals.m || newest;
+    var loaded = Object.keys(state.machines);
+    var hasCodex = loaded.some(function (id) {
+      var C = state.machines[id].codex;
+      return C && (Object.keys(C.daily || {}).length || C.limits);
+    });
+    var hasHourly = loaded.some(function (id) {
+      var H = state.machines[id].hourly;
+      return H && typeof H === "object" && Object.keys(H).length;
+    });
+    var has = hasCodex || hasHourly;
     section.hidden = !has;
     if (!has) return;
+    renderClaudeWeekly();
     var limits = document.getElementById("codexLimits"); limits.textContent = "";
     if (newest) {
       (newest.windows || []).forEach(function (w) {
@@ -2328,7 +2481,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function normalizePayload(payload) {
     normalizeBucket(payload.totals);
-    ["daily", "models", "projects"].forEach(function (group) {
+    ["daily", "hourly", "models", "projects"].forEach(function (group) {
       Object.keys(payload[group] || {}).forEach(function (key) {
         normalizeBucket(payload[group][key]);
       });
@@ -2391,6 +2544,45 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       render();
     };
   });
+
+  var claudePct = document.getElementById("claudeWeeklyPct");
+  var claudeDow = document.getElementById("claudeResetDow");
+  var claudeHour = document.getElementById("claudeResetHour");
+  WD.forEach(function (name, i) {
+    var option = el("option", null, name); option.value = String(i); claudeDow.appendChild(option);
+  });
+  for (var resetHour = 0; resetHour < 24; resetHour++) {
+    var hourOption = el("option", null, two(resetHour) + ":00");
+    hourOption.value = String(resetHour); claudeHour.appendChild(hourOption);
+  }
+  claudeDow.value = String(claudeWeekly.resetDow);
+  claudeHour.value = String(claudeWeekly.resetHour);
+  function saveClaudeReset() {
+    claudeWeekly.resetDow = Number(claudeDow.value);
+    claudeWeekly.resetHour = Number(claudeHour.value);
+    saveClaudeWeeklySettings();
+    render();
+  }
+  function saveClaudeCalibration() {
+    if (!claudePct.value.trim()) return;
+    var value = Number(claudePct.value);
+    if (!isFinite(value) || value < 0 || value > 100 || Math.floor(value) !== value) return;
+    claudeWeekly.resetDow = Number(claudeDow.value);
+    claudeWeekly.resetHour = Number(claudeHour.value);
+    claudeWeekly.calibrations.push({at:Date.now(), pct:value});
+    saveClaudeWeeklySettings();
+    render();
+  }
+  claudeDow.onchange = saveClaudeReset;
+  claudeHour.onchange = saveClaudeReset;
+  document.getElementById("claudeWeeklySave").onclick = saveClaudeCalibration;
+  claudePct.onkeydown = function (e) { if (e.key === "Enter") saveClaudeCalibration(); };
+  document.getElementById("claudeWeeklyClear").onclick = function () {
+    if (!confirm("Claude 주간 보정을 모두 지울까요?")) return;
+    claudeWeekly.calibrations = [];
+    saveClaudeWeeklySettings();
+    render();
+  };
 
   var fi = document.getElementById("fileInput");
   fi.onchange = function () { readFiles(fi.files); fi.value = ""; };
@@ -2855,7 +3047,7 @@ def _load_payload_cache(fp, args):
     except (OSError, ValueError):
         return None
     if (d.get("fp") != list(fp) or d.get("schema_v") != SCHEMA_VERSION or
-            d.get("cache_v") != CACHE_VERSION):
+            d.get("cache_v") != CACHE_VERSION or d.get("hourly_v") != 1):
         return None
     pl = d.get("payload")
     if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
@@ -2871,7 +3063,7 @@ def _save_payload_cache(fp, payload, args):
         tmp = PAYLOAD_CACHE.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             _json.dump({"fp": list(fp), "schema_v": SCHEMA_VERSION,
-                        "cache_v": CACHE_VERSION, "payload": payload},
+                        "cache_v": CACHE_VERSION, "hourly_v": 1, "payload": payload},
                        f, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(PAYLOAD_CACHE)
     except OSError:
@@ -2893,6 +3085,8 @@ def build_payload_incremental(args):
         return hit
 
     daily = {}
+    hourly = {}
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models_agg = {}
     projects_agg = {}
     daily_models = {}
@@ -2950,6 +3144,8 @@ def build_payload_incremental(args):
                 daily[day] = new_bucket()
                 daily_sessions[day] = set()
             add_usage(daily[day], u)
+            if day >= hourly_since:
+                add_usage(hourly.setdefault("%sT%02d" % (day, r[2]), new_bucket()), u)
             if model not in models_agg:
                 models_agg[model] = new_bucket()
             add_usage(models_agg[model], u)
@@ -3020,6 +3216,8 @@ def build_payload_incremental(args):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
+    if hourly:
+        payload["hourly"] = hourly
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost
