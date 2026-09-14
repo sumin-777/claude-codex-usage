@@ -116,7 +116,7 @@ def load_remote(local_id=None):
 
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 3
-CODEX_CACHE_VERSION = 1
+CODEX_CACHE_VERSION = 2
 
 
 def _cache_path(rel):
@@ -309,10 +309,12 @@ def _codex_entries():
             if entry and entry.get("sz") == size and entry.get("mt") == mtime:
                 continue
             if entry and size >= entry.get("off", 0) and entry.get("off", 0) > 0:
-                daily, last, limits, off = parse_codex_file(
+                daily, hourly, last, limits, off = parse_codex_file(
                     path, entry["off"], entry.get("last"))
                 for day, bucket in daily.items():
                     add_bucket(entry.setdefault("daily", {}).setdefault(day, new_bucket()), bucket)
+                for hour, bucket in hourly.items():
+                    add_bucket(entry.setdefault("hourly", {}).setdefault(hour, new_bucket()), bucket)
                 entry["last"], entry["off"] = last, off
                 if limits:
                     # 꼬리만 다시 읽어도 창별 최고치는 잃지 않게 합친다.
@@ -326,9 +328,9 @@ def _codex_entries():
                         entry["limits"]["peaks"] = peaks
                 entry["sz"], entry["mt"] = size, mtime
             else:
-                daily, last, limits, off = parse_codex_file(path)
+                daily, hourly, last, limits, off = parse_codex_file(path)
                 entry = {"sz": size, "mt": mtime, "off": off, "last": last,
-                         "daily": daily, "limits": limits}
+                         "daily": daily, "hourly": hourly, "limits": limits}
             files[rel] = entry
             dirty = True
     for gone in [name for name in files if name not in live]:
@@ -356,7 +358,7 @@ def _load_payload_cache(fp, args):
     except (OSError, ValueError):
         return None
     if (d.get("fp") != list(fp) or d.get("schema_v") != SCHEMA_VERSION or
-            d.get("cache_v") != CACHE_VERSION):
+            d.get("cache_v") != CACHE_VERSION or d.get("hourly_v") != 1):
         return None
     pl = d.get("payload")
     if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
@@ -372,7 +374,7 @@ def _save_payload_cache(fp, payload, args):
         tmp = PAYLOAD_CACHE.with_suffix(".tmp")
         with tmp.open("w", encoding="utf-8") as f:
             _json.dump({"fp": list(fp), "schema_v": SCHEMA_VERSION,
-                        "cache_v": CACHE_VERSION, "payload": payload},
+                        "cache_v": CACHE_VERSION, "hourly_v": 1, "payload": payload},
                        f, ensure_ascii=False, separators=(",", ":"))
         tmp.replace(PAYLOAD_CACHE)
     except OSError:
@@ -394,6 +396,8 @@ def build_payload_incremental(args):
         return hit
 
     daily = {}
+    hourly = {}
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models_agg = {}
     projects_agg = {}
     daily_models = {}
@@ -451,6 +455,8 @@ def build_payload_incremental(args):
                 daily[day] = new_bucket()
                 daily_sessions[day] = set()
             add_usage(daily[day], u)
+            if day >= hourly_since:
+                add_usage(hourly.setdefault("%sT%02d" % (day, r[2]), new_bucket()), u)
             if model not in models_agg:
                 models_agg[model] = new_bucket()
             add_usage(models_agg[model], u)
@@ -521,6 +527,8 @@ def build_payload_incremental(args):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
+    if hourly:
+        payload["hourly"] = hourly
     cost = estimate_cost(models_agg, load_pricing(args.pricing))
     if cost:
         payload["cost_estimate"] = cost

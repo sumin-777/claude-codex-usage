@@ -139,7 +139,7 @@ def normalize_payload_usage(payload):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "models", "projects"):
+    for section in ("daily", "hourly", "models", "projects"):
         buckets = payload.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -149,8 +149,11 @@ def normalize_payload_usage(payload):
                     bucket.setdefault(key, 0)
     codex = payload.get("codex")
     if isinstance(codex, dict):
-        cdaily = codex.get("daily", {})
-        buckets = list(cdaily.values()) if isinstance(cdaily, dict) else []
+        buckets = []
+        for section in ("daily", "hourly"):
+            values = codex.get(section, {})
+            if isinstance(values, dict):
+                buckets += list(values.values())
         for bucket in [codex.get("totals", {})] + buckets:
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
@@ -262,13 +265,14 @@ def codex_bucket(last):
 def parse_codex_file(path, start_off=0, previous_total=None):
     """Codex JSONL 의 완결된 꼬리만 읽는다."""
     daily = {}
+    hourly = {}
     newest = None
     peaks = {}
     off = start_off
     try:
         fh = open(str(path), "rb")
     except OSError:
-        return daily, previous_total, newest, start_off
+        return daily, hourly, previous_total, newest, start_off
     with fh:
         try:
             fh.seek(start_off)
@@ -301,7 +305,10 @@ def parse_codex_file(path, start_off=0, previous_total=None):
             last = info.get("last_token_usage")
             if dt is not None and isinstance(total, dict) and isinstance(last, dict) and total != previous_total:
                 day = dt.astimezone().strftime("%Y-%m-%d")
-                add_bucket(daily.setdefault(day, new_bucket()), codex_bucket(last))
+                hour = dt.astimezone().strftime("%Y-%m-%dT%H")
+                bucket = codex_bucket(last)
+                add_bucket(daily.setdefault(day, new_bucket()), bucket)
+                add_bucket(hourly.setdefault(hour, new_bucket()), bucket)
                 previous_total = total
             limits = payload.get("rate_limits")
             if dt is not None and isinstance(limits, dict):
@@ -322,11 +329,13 @@ def parse_codex_file(path, start_off=0, previous_total=None):
                     newest = {"at": timestamp, "plan": limits.get("plan_type"), "windows": windows}
     if newest is not None and peaks:
         newest["peaks"] = peaks
-    return daily, previous_total, newest, off
+    return daily, hourly, previous_total, newest, off
 
 
 def make_codex_payload(entries, since=None, until=None):
     daily = {}
+    hourly = {}
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     newest = None
     peaks = {}
     for entry in entries:
@@ -334,6 +343,11 @@ def make_codex_payload(entries, since=None, until=None):
             if (since and day < since) or (until and day > until):
                 continue
             add_bucket(daily.setdefault(day, new_bucket()), src)
+        for hour, src in entry.get("hourly", {}).items():
+            day = hour[:10]
+            if day < hourly_since or (since and day < since) or (until and day > until):
+                continue
+            add_bucket(hourly.setdefault(hour, new_bucket()), src)
         limit = entry.get("limits")
         if not limit:
             continue
@@ -348,6 +362,8 @@ def make_codex_payload(entries, since=None, until=None):
         add_bucket(totals, b)
     totals["total"] = bucket_total(totals)
     out = {"daily": daily, "totals": totals}
+    if hourly:
+        out["hourly"] = hourly
     if newest is not None:
         # 캐시에 든 원본은 건드리지 않는다. 내부용 peaks 는 내보내지 않고
         # 창마다 그 창의 최고치(peak_percent)만 붙인다.
@@ -370,8 +386,9 @@ def collect_codex(since=None, until=None):
     for base in (root / "sessions", root / "archived_sessions"):
         if base.is_dir():
             for path in sorted(base.rglob("rollout-*.jsonl")):
-                daily, last, limits, off = parse_codex_file(path)
-                entries.append({"daily": daily, "last": last, "limits": limits, "off": off})
+                daily, hourly, last, limits, off = parse_codex_file(path)
+                entries.append({"daily": daily, "hourly": hourly, "last": last,
+                                "limits": limits, "off": off})
     return make_codex_payload(entries, since, until)
 
 
@@ -446,6 +463,8 @@ def iter_records(root, verbose=False):
 
 def aggregate(root, since=None, until=None, verbose=False):
     daily = defaultdict(new_bucket)
+    hourly = defaultdict(new_bucket)
+    hourly_since = (datetime.now().astimezone().date() - timedelta(days=7)).strftime("%Y-%m-%d")
     models = defaultdict(new_bucket)
     projects = defaultdict(new_bucket)
     daily_models = defaultdict(lambda: defaultdict(int))
@@ -484,6 +503,8 @@ def aggregate(root, since=None, until=None, verbose=False):
 
         u = rec["usage"]
         add_usage(daily[day], u)
+        if day >= hourly_since:
+            add_usage(hourly[local_dt.strftime("%Y-%m-%dT%H")], u)
         add_usage(models[rec["model"]], u)
         add_usage(projects[rec["project"]], u)
 
@@ -511,6 +532,7 @@ def aggregate(root, since=None, until=None, verbose=False):
 
     return {
         "daily": dict(daily),
+        "hourly": dict(hourly),
         "models": dict(models),
         "projects": dict(projects),
         "daily_models": {d: dict(m) for d, m in daily_models.items()},
@@ -662,6 +684,8 @@ def build_payload(args):
         "hours": agg["hours"],
         "weekday_hour": agg["weekday_hour"],
     }
+    if agg["hourly"]:
+        payload["hourly"] = agg["hourly"]
 
     cost = estimate_cost(agg["models"], load_pricing(args.pricing))
     if cost:

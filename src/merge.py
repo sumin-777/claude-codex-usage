@@ -32,7 +32,7 @@ def normalize_machine(d):
         if isinstance(bucket, dict):
             for key in ("cw1", "cw5", "th"):
                 bucket.setdefault(key, 0)
-    for section in ("daily", "models", "projects"):
+    for section in ("daily", "hourly", "models", "projects"):
         buckets = d.get(section, {})
         if not isinstance(buckets, dict):
             continue
@@ -40,6 +40,13 @@ def normalize_machine(d):
             if isinstance(bucket, dict):
                 for key in ("cw1", "cw5", "th"):
                     bucket.setdefault(key, 0)
+    codex = d.get("codex")
+    if isinstance(codex, dict):
+        for section in ("daily", "hourly"):
+            for bucket in codex.get(section, {}).values():
+                if isinstance(bucket, dict):
+                    for key in KEYS:
+                        bucket.setdefault(key, 0)
     return d
 
 
@@ -66,6 +73,7 @@ def load_machines(paths):
 
 def merge(machines):
     daily = defaultdict(dict)
+    hourly = defaultdict(dict)
     daily_by_machine = defaultdict(dict)
     models = defaultdict(dict)
     projects = defaultdict(dict)
@@ -74,6 +82,7 @@ def merge(machines):
     totals = {k: 0 for k in KEYS}
     totals["sessions"] = 0
     codex_daily = defaultdict(dict)
+    codex_hourly = defaultdict(dict)
     codex_limits = None
     limit_hits = {}
 
@@ -86,6 +95,8 @@ def merge(machines):
                 daily_by_machine[day].get(label, 0)
                 + sum(b.get(k, 0) for k in ("i", "o", "cw", "cr"))
             )
+        for hour, b in d.get("hourly", {}).items():
+            merge_bucket(hourly[hour], b)
         for name, b in d.get("models", {}).items():
             merge_bucket(models[name], b)
         for name, b in d.get("projects", {}).items():
@@ -105,6 +116,8 @@ def merge(machines):
         if isinstance(codex, dict):
             for day, b in codex.get("daily", {}).items():
                 merge_bucket(codex_daily[day], b)
+            for hour, b in codex.get("hourly", {}).items():
+                merge_bucket(codex_hourly[hour], b)
             limits = codex.get("limits")
             if limits and (codex_limits is None or
                            limits.get("at", "") > codex_limits.get("at", "")):
@@ -158,12 +171,16 @@ def merge(machines):
         "hours": hours,
         "weekday_hour": weekday_hour,
     }
-    if codex_daily or codex_limits:
+    if hourly:
+        out["hourly"] = dict(hourly)
+    if codex_daily or codex_hourly or codex_limits:
         codex_totals = {k: 0 for k in KEYS}
         for b in codex_daily.values():
             merge_bucket(codex_totals, b)
         codex_totals["total"] = sum(codex_totals[k] for k in ("i", "o", "cw", "cr"))
         out["codex"] = {"daily": dict(codex_daily), "totals": codex_totals}
+        if codex_hourly:
+            out["codex"]["hourly"] = dict(codex_hourly)
         if codex_limits:
             out["codex"]["limits"] = codex_limits
     if limit_hits:
