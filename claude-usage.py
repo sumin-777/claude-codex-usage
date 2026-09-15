@@ -1380,7 +1380,11 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         claudeWeekly.calibrations = saved.calibrations.filter(function (cal) {
           var at = Number(cal && cal.at), pct = Number(cal && cal.pct);
           return at > 0 && isFinite(at) && pct >= 0 && pct <= 100 && Math.floor(pct) === pct;
-        }).map(function (cal) { return {at:Number(cal.at), pct:Number(cal.pct)}; });
+        }).map(function (cal) {
+          var out = {at:Number(cal.at), pct:Number(cal.pct)}, k = Number(cal.k);
+          if (isFinite(k) && k > 0) out.k = k;
+          return out;
+        });
       }
     } catch (e) {}
   }
@@ -1904,34 +1908,39 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function estimateClaudeWeekly(now, settings) {
     var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
-    var current = hourKey(now), oldest = null, mids = [], los = [], his = [], valid = [];
-    Object.keys(state.machines).forEach(function (id) {
-      var hourly = state.machines[id].hourly;
-      if (!hourly || typeof hourly !== "object") return;
-      Object.keys(hourly).forEach(function (key) { if (!oldest || key < oldest) oldest = key; });
+    var current = hourKey(now), slopes = [], changed = false, anchor = null;
+    (settings.calibrations || []).filter(function (cal) {
+      var at = Number(cal && cal.at);
+      return isFinite(at) && !isNaN(new Date(at).getTime()) && at <= now.getTime();
+    }).sort(function (a, b) { return Number(a.at) - Number(b.at); }).forEach(function (cal) {
+      var at = new Date(Number(cal.at)), pct = Number(cal.pct), calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
+      if (calStart === start) anchor = cal;
+      if (pct <= 0) return;
+      // 이번 창만 다시 계산한다. 지난 창은 머신마다 시간별 기록이 남은 날이 달라 모자라게 셀 수 있어 저장값을 쓴다.
+      var units = calStart === start ? claudeUnits(start, hourKey(at)) : 0, k = Number(cal.k);
+      if (units > 0) {
+        k = units / pct;
+        if (!isFinite(Number(cal.k)) || Math.abs(Number(cal.k) - k) > 1e-9) { cal.k = k; changed = true; }
+      } else if (!isFinite(k) || k <= 0) return;
+      slopes.push({cal:cal, k:k});
     });
-    (settings.calibrations || []).forEach(function (cal) {
-      var at = new Date(Number(cal.at)), pct = Number(cal.pct);
-      if (isNaN(at.getTime())) return;
-      var calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
-      if (!oldest || calStart < oldest) return;
-      var units = claudeUnits(calStart, hourKey(at));
-      if (units <= 0 || pct <= 0) return;
-      mids.push(units / pct);
-      los.push(units / (pct + 0.5));
-      his.push(units / Math.max(pct - 0.5, 0.5));
-      valid.push(cal);
-    });
-    var used = claudeUnits(start, current);
+    // 주간 안에서도 비율이 약 20% 흔들려 최근 보정값만 쓴다.
+    slopes = slopes.slice(-5);
+    var ks = slopes.map(function (item) { return item.k; }), used = claudeUnits(start, current);
+    var k = ks.length ? median(ks) : null, kMin = ks.length ? Math.min.apply(null, ks) : null, kMax = ks.length ? Math.max.apply(null, ks) : null;
+    var base = anchor ? Number(anchor.pct) : 0, baseUnits = anchor ? claudeUnits(start, hourKey(new Date(anchor.at))) : 0;
+    var inc = Math.max(0, used - baseUnits);
     return {
       startKey: start,
       endKey: current,
       nextResetKey: dayAdd(start.slice(0, 10), 7) + "T" + two(settings.resetHour),
       units: used,
-      estimate: mids.length ? used / median(mids) : null,
-      low: mids.length ? used / Math.max.apply(null, his) : null,
-      high: mids.length ? used / Math.min.apply(null, los) : null,
-      calibrations: valid
+      estimate: k == null ? null : base + inc / k,
+      low: k == null ? null : base + inc / kMax,
+      high: k == null ? null : base + inc / kMin,
+      anchor: anchor,
+      calibrations: slopes.map(function (item) { return item.cal; }),
+      changed: changed
     };
   }
 
@@ -1939,13 +1948,15 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
     var result;
     try { result = estimateClaudeWeekly(new Date(), claudeWeekly); }
-    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(new Date(), 4, 15), calibrations:[]}; }
+    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(new Date(), 4, 15), anchor:null, calibrations:[]}; }
+    if (result.changed) saveClaudeWeeklySettings();
     var reset = localTime(new Date(result.nextResetKey + ":00:00"));
     if (result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high)) {
-      var last = result.calibrations.slice().sort(function (a, b) { return a.at - b.at; }).pop();
-      text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "% (" + Math.round(result.low) + "~" +
-        Math.round(result.high) + "%) · 리셋 " + reset + " · 보정 " + result.calibrations.length +
-        "회(마지막 " + localTime(new Date(last.at)) + " " + last.pct + "%) · 로컬 기록 추정";
+      var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));   // 튀는 비율 하나가 수백 %를 만들 수 있다
+      text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "%" +
+        (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
+        " · 리셋 " + reset + " · 기준 " + (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%") +
+        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정";
       fill.style.width = Math.max(0, Math.min(100, result.estimate)) + "%";
     } else {
       text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
