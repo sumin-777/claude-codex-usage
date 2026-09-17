@@ -65,7 +65,7 @@ cell = recent.recentSessionCellText([], nowMs);
 assert.strictEqual(cell.main, "—");
 assert.strictEqual(cell.warning, "");
 
-const weekly = sandbox(["dayKey", "dayParse", "dayAdd", "weekdayOf", "two", "localDayKey", "hourKey", "claudeWindowStart", "claudeBucketUnits", "claudeUnits", "median", "estimateClaudeWeekly"]);
+const weekly = sandbox(["dayKey", "dayParse", "dayAdd", "weekdayOf", "two", "localDayKey", "hourKey", "claudeWindowStart", "claudeBucketUnits", "claudeUnits", "median", "latestClaudeLimits", "estimateClaudeWeekly"]);
 const L = (y, month, day, hour, minute) => new Date(y, month - 1, day, hour, minute || 0);
 const fri = now => weekly.claudeWindowStart(now, 4, 15);
 assert.strictEqual(fri(L(2026, 9, 18, 15, 0)), "2026-09-18T15");
@@ -91,6 +91,14 @@ cal1 = { at: cal1At, pct: 10 }; let cal2 = { at: cal2At, pct: 12 }, old = { at: 
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] });
 let middle = (150 + 1850 / 12) / 2;
 assert.strictEqual(result.calibrations.length, 2); assert.strictEqual(result.anchor, cal2); near(result.estimate, 12 + 650 / middle); near(result.low, 12 + 650 / (1850 / 12)); near(result.high, 12 + 650 / 150);
+weekly.state.machines.a.claude_limits = { recorded_at: new Date(now.getTime() - 30 * 60e3).toISOString(), seven_day: { used_percentage: 64, resets_at: Math.floor(now.getTime() / 1000) + 86400 }, five_hour: { used_percentage: 65, resets_at: Math.floor(now.getTime() / 1000) + 3600 } };
+let live = weekly.latestClaudeLimits(now);
+assert.strictEqual(live.machine, "a"); assert.strictEqual(live.pct, 64);
+result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] }, live);
+assert.strictEqual(result.anchor.live, true); near(result.estimate, 64);
+weekly.state.machines.a.claude_limits.seven_day.resets_at = Math.floor(now.getTime() / 1000) - 1;
+assert.strictEqual(weekly.latestClaudeLimits(now), null);
+delete weekly.state.machines.a.claude_limits;
 cal1 = { at: cal1At, pct: 10 }; cal2 = { at: cal2At, pct: 12 }; old = { at: oldAt, pct: 5, k: 200 };
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] });
 assert.strictEqual(result.calibrations.length, 3); near(result.estimate, 12 + 650 / (1850 / 12)); near(result.low, 12 + 650 / 200); near(result.high, 12 + 650 / 150);
@@ -102,4 +110,8 @@ assert.strictEqual(cal1.k, 140); assert.strictEqual(result.changed, false);   //
 let stored = [100, 200, 300, 400, 500, 600].map(function (k, i) { return { at: L(2026, 8, 20 + i, 10, 0).getTime(), pct: 10, k: k }; });
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: stored });
 assert.strictEqual(result.anchor, null); near(result.estimate, 2500 / 400); near(result.low, 2500 / 600); near(result.high, 2500 / 200);
+const limits = sandbox(["normalizeClaudeLimits"]);
+let cleanLimits = limits.normalizeClaudeLimits({ recorded_at:"2026-09-17T01:02:03Z", account:"secret", seven_day:{used_percentage:64,resets_at:1789711200,extra:true} });
+assert.deepStrictEqual(JSON.parse(JSON.stringify(cleanLimits)), { recorded_at:"2026-09-17T01:02:03Z", seven_day:{used_percentage:64,resets_at:1789711200} });
+assert.strictEqual(limits.normalizeClaudeLimits({ recorded_at:"bad", seven_day:{used_percentage:64,resets_at:1} }), null);
 console.log(tz + " OK");

@@ -133,12 +133,13 @@ Claude Code 세션이 도는 중이면 **두 호출 사이에 새 레코드가 �
 이미 배포된 머신들이 옛 형식을 보내온다. 지금도 schema 1 을 받고, 없는 새 키는
 `normalize_payload_usage()` 가 0 으로 채운다.
 
-schema 2의 선택 필드 `hourly`, `recent_sessions`, `codex`, `plan`, `limit_hits`는 순수 추가 필드다.
+schema 2의 선택 필드 `hourly`, `recent_sessions`, `codex`, `plan`, `limit_hits`, `claude_limits`는 순수 추가 필드다.
 `hourly`는 Claude의 최근 8개 로컬 날짜 시간별 숫자 버킷이며 데이터가 없으면 생략한다. `codex`는
 숫자와 OpenAI가 기록한 한도·플랜 라벨만, `recent_sessions`는 프로젝트별 최근 메인 세션
 최대 5개의 활동 시각·컨텍스트 크기·메시지 수만 담고 세션 ID와 파일 정보는 담지 않는다. `plan`은 공개 가능한 요금제 라벨만,
 `limit_hits`는 거절 시각·상태와 세션·프로젝트만 담는다. 프롬프트, 코드, 파일 경로,
 이메일, 이름, 계정·조직 ID는 절대 담지 않는다. 선택 필드는 데이터가 없으면 생략한다.
+`claude_limits`는 상태줄이 받은 5시간·주간 퍼센트·리셋 시각과 기록 시각만 담는다.
 
 증분 스캔의 행 캐시 형식을 바꿨으면 `CACHE_VERSION`(server.py)도 올린다. 안 올리면
 낡은 캐시 행이 그대로 재사용돼 새 필드가 조용히 0 으로 남는다.

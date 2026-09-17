@@ -986,14 +986,32 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return xs.length % 2 ? xs[middle] : (xs[middle - 1] + xs[middle]) / 2;
   }
 
-  function estimateClaudeWeekly(now, settings) {
+  function latestClaudeLimits(now) {
+    var newest = null;
+    Object.keys(state.machines).forEach(function (id) {
+      var payload = state.machines[id], limits = payload.claude_limits;
+      if (!limits || !limits.seven_day || Number(limits.seven_day.resets_at) * 1000 <= now.getTime()) return;
+      var at = new Date(limits.recorded_at).getTime();
+      if (!isFinite(at) || (newest && at <= newest.at)) return;
+      newest = {
+        at: at, recorded_at: limits.recorded_at,
+        pct: Number(limits.seven_day.used_percentage),
+        seven_day: limits.seven_day, five_hour: limits.five_hour || null,
+        machine: (payload.machine && payload.machine.label) || id
+      };
+    });
+    return newest;
+  }
+
+  function estimateClaudeWeekly(now, settings, live) {
     var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
-    var current = hourKey(now), slopes = [], changed = false, anchor = null;
+    var current = hourKey(now), slopes = [], changed = false, anchor = null, latestManualAt = -Infinity;
     (settings.calibrations || []).filter(function (cal) {
       var at = Number(cal && cal.at);
       return isFinite(at) && !isNaN(new Date(at).getTime()) && at <= now.getTime();
     }).sort(function (a, b) { return Number(a.at) - Number(b.at); }).forEach(function (cal) {
       var at = new Date(Number(cal.at)), pct = Number(cal.pct), calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
+      latestManualAt = Number(cal.at);
       if (calStart === start) anchor = cal;
       if (pct <= 0) return;
       // 이번 창만 다시 계산한다. 지난 창은 머신마다 시간별 기록이 남은 날이 달라 모자라게 셀 수 있어 저장값을 쓴다.
@@ -1004,6 +1022,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       } else if (!isFinite(k) || k <= 0) return;
       slopes.push({cal:cal, k:k});
     });
+    if (live && live.at > latestManualAt) {
+      anchor = {at:live.at, pct:live.pct, live:true, machine:live.machine};
+    }
     // 주간 안에서도 비율이 약 20% 흔들려 최근 보정값만 쓴다.
     slopes = slopes.slice(-5);
     var ks = slopes.map(function (item) { return item.k; }), used = claudeUnits(start, current);
@@ -1026,12 +1047,25 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function renderClaudeWeekly() {
     var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
-    var result;
-    try { result = estimateClaudeWeekly(new Date(), claudeWeekly); }
-    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(new Date(), 4, 15), anchor:null, calibrations:[]}; }
+    var now = new Date(), live = latestClaudeLimits(now), result;
+    try { result = estimateClaudeWeekly(now, claudeWeekly, live); }
+    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(now, 4, 15), anchor:null, calibrations:[]}; }
     if (result.changed) saveClaudeWeeklySettings();
     var reset = localTime(new Date(result.nextResetKey + ":00:00"));
-    if (result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high)) {
+    var hasEstimate = result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high);
+    if (live) {
+      text.textContent = "Claude 주간 실제 " + Math.round(live.pct) + "% · " +
+        relativeTime(live.recorded_at, now.getTime()) + " · " + live.machine +
+        " · 리셋 " + localTime(live.seven_day.resets_at) +
+        (live.five_hour ? " · 5시간 실제 " + Math.round(live.five_hour.used_percentage) + "%" : "");
+      if (hasEstimate) {
+        text.textContent += " · 추정 ≈" + Math.round(result.estimate) + "% · 기준 " +
+          (result.anchor && result.anchor.live ? "실제값" :
+            (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%")) +
+          " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회";
+      }
+      fill.style.width = Math.max(0, Math.min(100, live.pct)) + "%";
+    } else if (hasEstimate) {
       var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));   // 튀는 비율 하나가 수백 %를 만들 수 있다
       text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "%" +
         (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
@@ -1788,6 +1822,22 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
   }
 
+  function normalizeClaudeLimits(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        typeof value.recorded_at !== "string" ||
+        !isFinite(new Date(value.recorded_at).getTime())) return null;
+    var clean = {recorded_at:value.recorded_at};
+    ["five_hour", "seven_day"].forEach(function (name) {
+      var window = value[name];
+      if (!window || typeof window !== "object" || Array.isArray(window)) return;
+      var used = window.used_percentage, reset = window.resets_at;
+      if (typeof used !== "number" || !isFinite(used) || used < 0 || used > 100 ||
+          typeof reset !== "number" || !isFinite(reset) || reset <= 0) return;
+      clean[name] = {used_percentage:used, resets_at:reset};
+    });
+    return clean.five_hour || clean.seven_day ? clean : null;
+  }
+
   function normalizePayload(payload) {
     normalizeBucket(payload.totals);
     ["daily", "hourly", "models", "projects"].forEach(function (group) {
@@ -1820,6 +1870,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
     payload.recent_sessions = clean;
+    var limits = normalizeClaudeLimits(payload.claude_limits);
+    if (limits) payload.claude_limits = limits;
+    else delete payload.claude_limits;
   }
 
   function ingest(payload, quiet) {

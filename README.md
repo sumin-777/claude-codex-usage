@@ -44,6 +44,7 @@ Claude의 `message.usage`와 한도 거절 표시, Codex의 `token_count` 이벤
 | `tz` | 로컬 타임존 |
 | `collector` | 수집기 버전(날짜). 대시보드가 옛 수집기를 쓰는 머신을 알려 주는 데 쓴다 |
 | `hourly` | Claude의 최근 8개 로컬 날짜 시간별 토큰·메시지 수치. 데이터가 없으면 생략하며 대화 내용은 포함하지 않는다 |
+| `claude_limits` | Claude Code 상태줄이 받은 5시간·주간 사용률과 리셋 시각, 기록 시각. 계정·세션·경로 정보는 포함하지 않는다 |
 | `recent_sessions` | 프로젝트별 최근 Claude 메인 세션 최대 5개의 마지막 활동 시각·컨텍스트 크기·메시지 수. 세션 ID나 파일 정보는 포함하지 않는다 |
 | `codex` | Codex 토큰 수치, 요청 수, OpenAI가 기록한 한도 백분율·리셋 시각·플랜 라벨 |
 | `plan` | Claude 플랜·한도 등급·추가 사용 여부 등 요금제 라벨. 이메일·이름·계정/조직 ID는 절대 담지 않는다 |
@@ -71,6 +72,27 @@ python3 claude-usage.py --stop
 ```
 
 Windows에서는 `--daemon` 이 `pythonw.exe` 로 띄우므로 콘솔 창이 뜨지 않는다.
+
+### Claude 실제 한도 받기
+
+터미널 Claude Code 세션의 상태줄 명령에 이 도구를 연결하면 실제 5시간·주간 사용률을
+`~/.claude-usage/claude_limits.json`에 기록한다. `~/.claude/settings.json` 또는 프로젝트의
+`.claude/settings.json`에 다음처럼 넣는다(스크립트 경로는 절대경로로 바꾼다).
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "python /path/to/claude-usage.py --statusline"
+  }
+}
+```
+
+앱(데스크톱) 세션에서는 상태줄이 실행되지 않으므로 값이 들어오지 않는다. 한도는 계정
+단위이므로 같은 계정으로 터미널을 쓰는 머신 한 대에만 연결해도 된다.
+
+세션을 띄운 직후에는 한도가 비어 있다. 응답을 한 번 받은 뒤부터 값이 들어온다.
+이미 상태줄을 쓰고 있다면 기존 명령을 대체하므로, 두 출력을 함께 쓰려면 직접 이어 붙여야 한다.
 
 **Windows 에서 주의할 것**
 
@@ -134,6 +156,7 @@ python3 claude-usage.py --daemon --watch ~/Dropbox/claude-usage
 |---|---|
 | `--daemon` | 백그라운드로 띄우고 터미널을 돌려준다 |
 | `--status` / `--stop` | 상태 확인 / 종료. `--stop` 은 기록된 인스턴스가 응답하고 python 일 때만 끄고, 아니면 기록만 지운다 |
+| `--statusline` | Claude Code 상태줄 stdin에서 실제 5시간·주간 한도만 기록하고 한 줄을 출력 |
 | `--host 0.0.0.0` | 다른 머신이 `--push` 로 보낼 수 있게 연다 (기본은 로컬 전용) |
 | `--port N` | 기본 8787 |
 | `--watch DIR` | 공유 폴더를 읽어들인다 (여러 번 지정 가능) |
@@ -152,7 +175,7 @@ python3 claude-usage.py --daemon --watch ~/Dropbox/claude-usage
 | `--no-browser` | 브라우저를 자동으로 열지 않는다 |
 
 상태는 `~/.claude-usage/` 아래에 둔다 — `machines/` (받은 스냅샷),
-`cache/` (증분 스캔 캐시), `server.log`.
+`cache/` (증분 스캔 캐시), `claude_limits.json` (상태줄 한도), `server.log`.
 
 ## 증분 스캔
 
@@ -267,6 +290,9 @@ export OTEL_EXPORTER_OTLP_ENDPOINT=https://<collector>/v1/metrics
                 "sessions":0, "active_days":0 },
   "daily":   { "2026-09-10": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0,"s":0 } },
   "hourly":  { "2026-09-10T14": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0 } },
+  "claude_limits": { "recorded_at":"2026-09-10T02:00:00+00:00",
+                       "five_hour":{"used_percentage":65,"resets_at":1789642200},
+                       "seven_day":{"used_percentage":64,"resets_at":1789711200} },
   "daily_models": { "2026-09-10": { "claude-opus-…": 0 } },
   "models":  { "claude-opus-…": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0 } },
   "projects":{ "myapp": { "i":0,"o":0,"cw":0,"cr":0,"cw1":0,"cw5":0,"th":0,"m":0,"last":"2026-09-10" } },

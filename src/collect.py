@@ -21,6 +21,7 @@ Anthropic 청구 기준 수치가 아니며, 구독제 사용량 한도와도 �
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -118,7 +119,7 @@ def decode_project(dirname):
 
 
 # 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
-COLLECTOR_VERSION = "2026-09-14"
+COLLECTOR_VERSION = "2026-09-17"
 
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _FIRST_CWD = {}
@@ -225,6 +226,47 @@ def normalize_payload_usage(payload):
         payload["recent_sessions"] = clean
     else:
         payload.pop("recent_sessions", None)
+    limits = normalize_claude_limits(payload.get("claude_limits"))
+    if limits:
+        payload["claude_limits"] = limits
+    else:
+        payload.pop("claude_limits", None)
+    return payload
+
+
+def normalize_claude_limits(value):
+    """상태줄이 기록한 공개 가능한 한도 숫자만 남긴다."""
+    if not isinstance(value, dict) or parse_ts(value.get("recorded_at")) is None:
+        return None
+    clean = {"recorded_at": value["recorded_at"]}
+    for name in ("five_hour", "seven_day"):
+        window = value.get(name)
+        if not isinstance(window, dict):
+            continue
+        used, reset = window.get("used_percentage"), window.get("resets_at")
+        if (not isinstance(used, (int, float)) or isinstance(used, bool) or
+                not math.isfinite(used) or used < 0 or used > 100 or
+                not isinstance(reset, (int, float)) or isinstance(reset, bool) or
+                not math.isfinite(reset) or reset <= 0):
+            continue
+        clean[name] = {"used_percentage": used, "resets_at": reset}
+    return clean if len(clean) > 1 else None
+
+
+def load_claude_limits():
+    try:
+        with (Path.home() / ".claude-usage" / "claude_limits.json").open("r", encoding="utf-8") as f:
+            return normalize_claude_limits(json.load(f))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def attach_claude_limits(payload):
+    limits = load_claude_limits()
+    if limits:
+        payload["claude_limits"] = limits
+    else:
+        payload.pop("claude_limits", None)
     return payload
 
 
@@ -791,6 +833,8 @@ def build_payload(args):
     codex = collect_codex(args.since, args.until)
     if codex:
         payload["codex"] = codex
+
+    attach_claude_limits(payload)
 
     return payload
 

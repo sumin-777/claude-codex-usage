@@ -3,6 +3,7 @@
 import argparse
 import ast
 import importlib.util
+import io
 import json
 import os
 import py_compile
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, time, timedelta
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,6 +90,51 @@ def names_units():
     return "8 project_name + 17 human + parse_ts offset"
 
 
+def statusline_check():
+    server = load("statusline_server", ROOT / "claude-usage.py")
+    # 사용자의 진짜 ~/.claude-usage 를 건드리면 안 된다 (마지막에 지운다).
+    home = Path(tempfile.mkdtemp())
+    server.STORE = home / ".claude-usage"
+    server.CLAUDE_LIMITS_FILE = server.STORE / "claude_limits.json"
+    path = server.CLAUDE_LIMITS_FILE
+
+    def run(raw):
+        previous = server._sys.stdin
+        output = io.StringIO()
+        try:
+            server._sys.stdin = io.StringIO(raw)
+            with redirect_stdout(output):
+                server.do_statusline()
+        finally:
+            server._sys.stdin = previous
+        return output.getvalue().strip()
+
+    for raw in ("", "{broken", "{}"):
+        if path.exists():
+            path.unlink()
+        assert run(raw) == "Claude 한도 -"
+        assert not path.exists()
+    sample = {"rate_limits": {
+        "five_hour": {"used_percentage": 65, "resets_at": 1789642200, "ignored": "x"},
+        "seven_day": {"used_percentage": 64, "resets_at": 1789711200},
+        "other": {"used_percentage": 99, "resets_at": 1}}}
+    assert run(json.dumps(sample)) == "Claude 5시간 65% · 주간 64%"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert set(saved) == {"recorded_at", "five_hour", "seven_day"}
+    assert saved["five_hour"] == {"used_percentage": 65, "resets_at": 1789642200}
+    assert saved["seven_day"] == {"used_percentage": 64, "resets_at": 1789711200}
+    assert datetime.strptime(saved["recorded_at"], "%Y-%m-%dT%H:%M:%S+00:00")
+
+    # 상태줄 출력은 콘솔 인코딩이 아니라 UTF-8 이어야 한다 (cp949 로 내보내면 Claude Code 화면에서 깨진다).
+    env = dict(os.environ, USERPROFILE=str(home), HOME=str(home))
+    proc = subprocess.run([sys.executable, str(ROOT / "claude-usage.py"), "--statusline"],
+                          input=json.dumps(sample).encode("utf-8"),
+                          stdout=subprocess.PIPE, env=env)
+    assert proc.stdout.decode("utf-8").strip() == "Claude 5시간 65% · 주간 64%", proc.stdout
+    shutil.rmtree(str(home), ignore_errors=True)
+    return "valid write + 3 quiet invalid + UTF-8 stdout"
+
+
 def fixture():
     collect = load("fixture_collect", ROOT / "src" / "collect.py")
     server = load("fixture_server", ROOT / "claude-usage.py")
@@ -128,10 +175,23 @@ def fixture():
                           {"last": stamp(-4, 9, 0), "ctx": 1500, "m": 2}],
                 "beta": [{"last": stamp(-2, 17, 15), "ctx": 66, "m": 1}]}
     full, incremental = collect.build_payload(args), server.build_payload_incremental(args)
+    assert "claude_limits" not in full and "claude_limits" not in incremental
     assert full.get("recent_sessions") == expected
     assert incremental.get("recent_sessions") == expected
     strip = lambda payload: dict((key, value) for key, value in payload.items() if key not in ("generated_at", "source"))
     assert strip(full) == strip(incremental)
+    limits = {"recorded_at": "2026-09-17T01:02:03+00:00",
+              "five_hour": {"used_percentage": 65, "resets_at": 1789642200},
+              "seven_day": {"used_percentage": 64, "resets_at": 1789711200}}
+    server.CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    server.CLAUDE_LIMITS_FILE.write_text(json.dumps(limits), encoding="utf-8")
+    full_limits, incremental_limits = collect.build_payload(args), server.build_payload_incremental(args)
+    assert full_limits.get("claude_limits") == limits
+    assert incremental_limits.get("claude_limits") == limits
+    assert strip(full_limits) == strip(incremental_limits)
+    server.CLAUDE_LIMITS_FILE.unlink()
+    assert "claude_limits" not in collect.build_payload(args)
+    assert "claude_limits" not in server.build_payload_incremental(args)
     serialized = json.dumps(full["recent_sessions"])
     for forbidden in ("alpha-new", "alpha-older", "beta-main", "fallback.jsonl", "subagents", str(case)):
         assert forbidden not in serialized
@@ -149,7 +209,7 @@ def fixture():
     server.scan_local = appending_scan
     server._do_scan(args)
     assert server._scan["fp"] != server._fingerprint(projects), "mid-scan append must trigger a rescan"
-    return "full = incremental; one-record growth; mid-scan append"
+    return "full = incremental with/without limits; one-record growth; mid-scan append"
 
 
 def merge_check():
@@ -157,20 +217,25 @@ def merge_check():
     entries = [{"last": "2026-09-%02dT12:00:00+09:00" % day, "ctx": day * 1000, "m": day}
                for day in (9, 14, 10, 13, 11, 12)]
     base = {"schema": 2, "machine": {"id": "a", "label": "machine-a"}, "totals": {}, "daily": {},
-            "models": {}, "projects": {}, "hours": [], "weekday_hour": [], "recent_sessions": {"project": entries}}
+            "models": {}, "projects": {}, "hours": [], "weekday_hour": [], "recent_sessions": {"project": entries},
+            "claude_limits": {"recorded_at": "2026-09-17T02:00:00+00:00",
+                              "seven_day": {"used_percentage": 64, "resets_at": 1789711200}}}
     old = {"schema": 2, "machine": {"id": "b", "label": "machine-b"}, "totals": {}, "daily": {},
-           "models": {}, "projects": {}, "hours": [], "weekday_hour": []}
+           "models": {}, "projects": {}, "hours": [], "weekday_hour": [],
+           "claude_limits": {"recorded_at": "2026-09-17T01:00:00+00:00",
+                             "seven_day": {"used_percentage": 60, "resets_at": 1789711200}}}
     out = merge.merge([merge.normalize_machine(base), merge.normalize_machine(old)])
     assert all(m.get("schema") in (1, 2) and m["machine"]["id"] for m in out["machines"])   # dashboard ingest() 계약
     kept = out["recent_sessions"]["project"]
     assert [entry["last"][8:10] for entry in kept] == ["14", "13", "12", "11", "10"]
     assert all(entry["machine"] == "machine-a" for entry in kept)
     assert "recent_sessions" not in old
+    assert out["claude_limits"] == base["claude_limits"]
     first = {"schema": 2, "machine": {"id": "c", "label": "c"}, "totals": {}, "daily": {}, "models": {}, "projects": {}, "hours": [], "weekday_hour": [], "hourly": {"2026-09-14T10": {"i": 1, "o": 2}}}
     second = {"schema": 2, "machine": {"id": "d", "label": "d"}, "totals": {}, "daily": {}, "models": {}, "projects": {}, "hours": [], "weekday_hour": [], "hourly": {"2026-09-14T10": {"i": 3, "o": 4, "cw": 5}}}
     hourly = merge.merge([merge.normalize_machine(first), merge.normalize_machine(second)])["hourly"]["2026-09-14T10"]
     assert hourly["i"] == 4 and hourly["o"] == 6 and hourly["cw"] == 5
-    return "recent top-5 + hourly sum"
+    return "recent top-5 + hourly sum + newest Claude limits"
 
 
 def js_check(no_js):
@@ -195,7 +260,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-js", action="store_true")
     options = parser.parse_args()
-    checks = [("syntax", syntax_check), ("names_units", names_units), ("fixture", fixture), ("merge", merge_check)]
+    checks = [("syntax", syntax_check), ("names_units", names_units), ("statusline", statusline_check),
+              ("fixture", fixture), ("merge", merge_check)]
     failed = 0
     try:
         for label, check in checks:

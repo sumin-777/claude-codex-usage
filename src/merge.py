@@ -12,6 +12,7 @@ git repo 등)에 모아두고 이 스크립트를 돌리면 대시보드가 읽�
 
 import argparse
 import json
+import math
 import re
 import sys
 from collections import defaultdict
@@ -47,6 +48,24 @@ def recent_time(entry):
         return datetime.min
 
 
+def normalize_claude_limits(value):
+    if not isinstance(value, dict) or recent_time({"last": value.get("recorded_at")}) == datetime.min:
+        return None
+    clean = {"recorded_at": value["recorded_at"]}
+    for name in ("five_hour", "seven_day"):
+        window = value.get(name)
+        if not isinstance(window, dict):
+            continue
+        used, reset = window.get("used_percentage"), window.get("resets_at")
+        if (not isinstance(used, (int, float)) or isinstance(used, bool) or
+                not math.isfinite(used) or used < 0 or used > 100 or
+                not isinstance(reset, (int, float)) or isinstance(reset, bool) or
+                not math.isfinite(reset) or reset <= 0):
+            continue
+        clean[name] = {"used_percentage": used, "resets_at": reset}
+    return clean if len(clean) > 1 else None
+
+
 def normalize_machine(d):
     for bucket in [d.get("totals", {})]:
         if isinstance(bucket, dict):
@@ -79,6 +98,11 @@ def normalize_machine(d):
         d["recent_sessions"] = clean
     else:
         d.pop("recent_sessions", None)
+    limits = normalize_claude_limits(d.get("claude_limits"))
+    if limits:
+        d["claude_limits"] = limits
+    else:
+        d.pop("claude_limits", None)
     return d
 
 
@@ -115,6 +139,7 @@ def merge(machines):
     totals["sessions"] = 0
     codex_daily = defaultdict(dict)
     codex_limits = None
+    claude_limits = None
     limit_hits = {}
     recent_sessions = defaultdict(list)
 
@@ -157,6 +182,11 @@ def merge(machines):
             if limits and (codex_limits is None or
                            limits.get("at", "") > codex_limits.get("at", "")):
                 codex_limits = limits
+        limits = d.get("claude_limits")
+        if limits and (claude_limits is None or
+                       recent_time({"last": limits["recorded_at"]}) >
+                       recent_time({"last": claude_limits["recorded_at"]})):
+            claude_limits = limits
         for hit in d.get("limit_hits") or []:
             key = (hit.get("requestId"), hit.get("timestamp"))
             item = dict(hit)
@@ -198,6 +228,8 @@ def merge(machines):
     }
     if hourly:
         out["hourly"] = dict(hourly)
+    if claude_limits:
+        out["claude_limits"] = claude_limits
     if recent_sessions:
         out["recent_sessions"] = {
             project: sorted(entries, key=recent_time, reverse=True)[:5]

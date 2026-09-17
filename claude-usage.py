@@ -34,6 +34,7 @@ if _sys.version_info < (3, 6):
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -131,7 +132,7 @@ def decode_project(dirname):
 
 
 # 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
-COLLECTOR_VERSION = "2026-09-14"
+COLLECTOR_VERSION = "2026-09-17"
 
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _FIRST_CWD = {}
@@ -238,6 +239,47 @@ def normalize_payload_usage(payload):
         payload["recent_sessions"] = clean
     else:
         payload.pop("recent_sessions", None)
+    limits = normalize_claude_limits(payload.get("claude_limits"))
+    if limits:
+        payload["claude_limits"] = limits
+    else:
+        payload.pop("claude_limits", None)
+    return payload
+
+
+def normalize_claude_limits(value):
+    """상태줄이 기록한 공개 가능한 한도 숫자만 남긴다."""
+    if not isinstance(value, dict) or parse_ts(value.get("recorded_at")) is None:
+        return None
+    clean = {"recorded_at": value["recorded_at"]}
+    for name in ("five_hour", "seven_day"):
+        window = value.get(name)
+        if not isinstance(window, dict):
+            continue
+        used, reset = window.get("used_percentage"), window.get("resets_at")
+        if (not isinstance(used, (int, float)) or isinstance(used, bool) or
+                not math.isfinite(used) or used < 0 or used > 100 or
+                not isinstance(reset, (int, float)) or isinstance(reset, bool) or
+                not math.isfinite(reset) or reset <= 0):
+            continue
+        clean[name] = {"used_percentage": used, "resets_at": reset}
+    return clean if len(clean) > 1 else None
+
+
+def load_claude_limits():
+    try:
+        with (Path.home() / ".claude-usage" / "claude_limits.json").open("r", encoding="utf-8") as f:
+            return normalize_claude_limits(json.load(f))
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def attach_claude_limits(payload):
+    limits = load_claude_limits()
+    if limits:
+        payload["claude_limits"] = limits
+    else:
+        payload.pop("claude_limits", None)
     return payload
 
 
@@ -805,6 +847,8 @@ def build_payload(args):
     if codex:
         payload["codex"] = codex
 
+    attach_claude_limits(payload)
+
     return payload
 
 
@@ -918,6 +962,7 @@ import webbrowser
 from pathlib import Path as _Path
 
 STORE = _Path.home() / ".claude-usage"
+CLAUDE_LIMITS_FILE = STORE / "claude_limits.json"
 PAGE = r"""<title>Claude · Codex 토큰 미터</title>
 
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1906,14 +1951,32 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return xs.length % 2 ? xs[middle] : (xs[middle - 1] + xs[middle]) / 2;
   }
 
-  function estimateClaudeWeekly(now, settings) {
+  function latestClaudeLimits(now) {
+    var newest = null;
+    Object.keys(state.machines).forEach(function (id) {
+      var payload = state.machines[id], limits = payload.claude_limits;
+      if (!limits || !limits.seven_day || Number(limits.seven_day.resets_at) * 1000 <= now.getTime()) return;
+      var at = new Date(limits.recorded_at).getTime();
+      if (!isFinite(at) || (newest && at <= newest.at)) return;
+      newest = {
+        at: at, recorded_at: limits.recorded_at,
+        pct: Number(limits.seven_day.used_percentage),
+        seven_day: limits.seven_day, five_hour: limits.five_hour || null,
+        machine: (payload.machine && payload.machine.label) || id
+      };
+    });
+    return newest;
+  }
+
+  function estimateClaudeWeekly(now, settings, live) {
     var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
-    var current = hourKey(now), slopes = [], changed = false, anchor = null;
+    var current = hourKey(now), slopes = [], changed = false, anchor = null, latestManualAt = -Infinity;
     (settings.calibrations || []).filter(function (cal) {
       var at = Number(cal && cal.at);
       return isFinite(at) && !isNaN(new Date(at).getTime()) && at <= now.getTime();
     }).sort(function (a, b) { return Number(a.at) - Number(b.at); }).forEach(function (cal) {
       var at = new Date(Number(cal.at)), pct = Number(cal.pct), calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
+      latestManualAt = Number(cal.at);
       if (calStart === start) anchor = cal;
       if (pct <= 0) return;
       // 이번 창만 다시 계산한다. 지난 창은 머신마다 시간별 기록이 남은 날이 달라 모자라게 셀 수 있어 저장값을 쓴다.
@@ -1924,6 +1987,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       } else if (!isFinite(k) || k <= 0) return;
       slopes.push({cal:cal, k:k});
     });
+    if (live && live.at > latestManualAt) {
+      anchor = {at:live.at, pct:live.pct, live:true, machine:live.machine};
+    }
     // 주간 안에서도 비율이 약 20% 흔들려 최근 보정값만 쓴다.
     slopes = slopes.slice(-5);
     var ks = slopes.map(function (item) { return item.k; }), used = claudeUnits(start, current);
@@ -1946,12 +2012,25 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   function renderClaudeWeekly() {
     var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
-    var result;
-    try { result = estimateClaudeWeekly(new Date(), claudeWeekly); }
-    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(new Date(), 4, 15), anchor:null, calibrations:[]}; }
+    var now = new Date(), live = latestClaudeLimits(now), result;
+    try { result = estimateClaudeWeekly(now, claudeWeekly, live); }
+    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(now, 4, 15), anchor:null, calibrations:[]}; }
     if (result.changed) saveClaudeWeeklySettings();
     var reset = localTime(new Date(result.nextResetKey + ":00:00"));
-    if (result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high)) {
+    var hasEstimate = result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high);
+    if (live) {
+      text.textContent = "Claude 주간 실제 " + Math.round(live.pct) + "% · " +
+        relativeTime(live.recorded_at, now.getTime()) + " · " + live.machine +
+        " · 리셋 " + localTime(live.seven_day.resets_at) +
+        (live.five_hour ? " · 5시간 실제 " + Math.round(live.five_hour.used_percentage) + "%" : "");
+      if (hasEstimate) {
+        text.textContent += " · 추정 ≈" + Math.round(result.estimate) + "% · 기준 " +
+          (result.anchor && result.anchor.live ? "실제값" :
+            (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%")) +
+          " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회";
+      }
+      fill.style.width = Math.max(0, Math.min(100, live.pct)) + "%";
+    } else if (hasEstimate) {
       var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));   // 튀는 비율 하나가 수백 %를 만들 수 있다
       text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "%" +
         (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
@@ -2708,6 +2787,22 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
   }
 
+  function normalizeClaudeLimits(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value) ||
+        typeof value.recorded_at !== "string" ||
+        !isFinite(new Date(value.recorded_at).getTime())) return null;
+    var clean = {recorded_at:value.recorded_at};
+    ["five_hour", "seven_day"].forEach(function (name) {
+      var window = value[name];
+      if (!window || typeof window !== "object" || Array.isArray(window)) return;
+      var used = window.used_percentage, reset = window.resets_at;
+      if (typeof used !== "number" || !isFinite(used) || used < 0 || used > 100 ||
+          typeof reset !== "number" || !isFinite(reset) || reset <= 0) return;
+      clean[name] = {used_percentage:used, resets_at:reset};
+    });
+    return clean.five_hour || clean.seven_day ? clean : null;
+  }
+
   function normalizePayload(payload) {
     normalizeBucket(payload.totals);
     ["daily", "hourly", "models", "projects"].forEach(function (group) {
@@ -2740,6 +2835,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
     payload.recent_sessions = clean;
+    var limits = normalizeClaudeLimits(payload.claude_limits);
+    if (limits) payload.claude_limits = limits;
+    else delete payload.claude_limits;
   }
 
   function ingest(payload, quiet) {
@@ -3055,7 +3153,7 @@ def load_remote(local_id=None):
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
-PAYLOAD_CACHE_VERSION = 3   # payload 를 만드는 규칙이 바뀌면 올린다 (1 hourly, 2 UUID 폴더 이름, 3 모든 폴더 cwd 이름·collector)
+PAYLOAD_CACHE_VERSION = 4   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits)
 
 
 def _cache_path(rel):
@@ -3336,7 +3434,7 @@ def build_payload_incremental(args):
     hit = _load_payload_cache(fp, args)
     if hit is not None:
         hit["source"] = dict(hit.get("source", {}), cache_hit=True)
-        return hit
+        return attach_claude_limits(hit)
 
     daily = {}
     hourly = {}
@@ -3491,8 +3589,53 @@ def build_payload_incremental(args):
     codex = make_codex_payload(_codex_entries(), args.since, args.until)
     if codex:
         payload["codex"] = codex
+    attach_claude_limits(payload)
     _save_payload_cache(fp, payload, args)
     return payload
+
+
+def do_statusline():
+    text = "Claude 한도 -"
+    tmp = None
+    try:
+        incoming = _json.load(_sys.stdin)
+        raw = incoming.get("rate_limits") if isinstance(incoming, dict) else None
+        value = {"recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        if isinstance(raw, dict):
+            for name in ("five_hour", "seven_day"):
+                if name in raw:
+                    value[name] = raw[name]
+        limits = normalize_claude_limits(value)
+        if limits:
+            STORE.mkdir(parents=True, exist_ok=True)
+            tmp = CLAUDE_LIMITS_FILE.with_name(
+                CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
+            with tmp.open("w", encoding="utf-8") as f:
+                _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
+            tmp.replace(CLAUDE_LIMITS_FILE)
+            parts = []
+            for name, label in (("five_hour", "5시간"), ("seven_day", "주간")):
+                if name in limits:
+                    pct = ("%.1f" % limits[name]["used_percentage"]).rstrip("0").rstrip(".")
+                    parts.append("%s %s%%" % (label, pct))
+            text = "Claude " + " · ".join(parts)
+    except Exception:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
+    try:
+        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+        _sys.stdout.buffer.flush()
+    except Exception:
+        try:
+            print(console_safe(text))
+        except Exception:
+            pass
 
 
 def scan_local(args):
@@ -4183,6 +4326,7 @@ def main():
                     help="백그라운드로 띄우고 터미널을 돌려준다 (창을 닫아도 계속 돈다)")
     ap.add_argument("--stop", action="store_true", help="백그라운드 인스턴스를 종료")
     ap.add_argument("--status", action="store_true", help="백그라운드 인스턴스 상태 확인")
+    ap.add_argument("--statusline", action="store_true", help="Claude Code 상태줄에서 한도만 기록")
     ap.add_argument("--diag", action="store_true",
                     help="데이터 규모와 스캔 시간을 출력한다 (느릴 때 원인 확인용)")
     ap.add_argument("--clear-cache", action="store_true",
@@ -4199,7 +4343,9 @@ def main():
     ap.add_argument("--print-summary", action="store_true", help="터미널에 사용량 요약 출력")
     args = ap.parse_args()
 
-    if args.diag:
+    if args.statusline:
+        do_statusline()
+    elif args.diag:
         do_diag(args)
     elif args.clear_cache:
         do_clear_cache(args)

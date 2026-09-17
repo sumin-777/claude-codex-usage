@@ -54,6 +54,7 @@ import webbrowser
 from pathlib import Path as _Path
 
 STORE = _Path.home() / ".claude-usage"
+CLAUDE_LIMITS_FILE = STORE / "claude_limits.json"
 PAGE = r"""@@HTML@@"""
 
 SHELL = """<!doctype html>
@@ -117,7 +118,7 @@ def load_remote(local_id=None):
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
 CODEX_CACHE_VERSION = 1
-PAYLOAD_CACHE_VERSION = 3   # payload 를 만드는 규칙이 바뀌면 올린다 (1 hourly, 2 UUID 폴더 이름, 3 모든 폴더 cwd 이름·collector)
+PAYLOAD_CACHE_VERSION = 4   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits)
 
 
 def _cache_path(rel):
@@ -398,7 +399,7 @@ def build_payload_incremental(args):
     hit = _load_payload_cache(fp, args)
     if hit is not None:
         hit["source"] = dict(hit.get("source", {}), cache_hit=True)
-        return hit
+        return attach_claude_limits(hit)
 
     daily = {}
     hourly = {}
@@ -553,8 +554,53 @@ def build_payload_incremental(args):
     codex = make_codex_payload(_codex_entries(), args.since, args.until)
     if codex:
         payload["codex"] = codex
+    attach_claude_limits(payload)
     _save_payload_cache(fp, payload, args)
     return payload
+
+
+def do_statusline():
+    text = "Claude 한도 -"
+    tmp = None
+    try:
+        incoming = _json.load(_sys.stdin)
+        raw = incoming.get("rate_limits") if isinstance(incoming, dict) else None
+        value = {"recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        if isinstance(raw, dict):
+            for name in ("five_hour", "seven_day"):
+                if name in raw:
+                    value[name] = raw[name]
+        limits = normalize_claude_limits(value)
+        if limits:
+            STORE.mkdir(parents=True, exist_ok=True)
+            tmp = CLAUDE_LIMITS_FILE.with_name(
+                CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
+            with tmp.open("w", encoding="utf-8") as f:
+                _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
+            tmp.replace(CLAUDE_LIMITS_FILE)
+            parts = []
+            for name, label in (("five_hour", "5시간"), ("seven_day", "주간")):
+                if name in limits:
+                    pct = ("%.1f" % limits[name]["used_percentage"]).rstrip("0").rstrip(".")
+                    parts.append("%s %s%%" % (label, pct))
+            text = "Claude " + " · ".join(parts)
+    except Exception:
+        pass
+    finally:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
+    try:
+        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+        _sys.stdout.buffer.flush()
+    except Exception:
+        try:
+            print(console_safe(text))
+        except Exception:
+            pass
 
 
 def scan_local(args):
@@ -1245,6 +1291,7 @@ def main():
                     help="백그라운드로 띄우고 터미널을 돌려준다 (창을 닫아도 계속 돈다)")
     ap.add_argument("--stop", action="store_true", help="백그라운드 인스턴스를 종료")
     ap.add_argument("--status", action="store_true", help="백그라운드 인스턴스 상태 확인")
+    ap.add_argument("--statusline", action="store_true", help="Claude Code 상태줄에서 한도만 기록")
     ap.add_argument("--diag", action="store_true",
                     help="데이터 규모와 스캔 시간을 출력한다 (느릴 때 원인 확인용)")
     ap.add_argument("--clear-cache", action="store_true",
@@ -1261,7 +1308,9 @@ def main():
     ap.add_argument("--print-summary", action="store_true", help="터미널에 사용량 요약 출력")
     args = ap.parse_args()
 
-    if args.diag:
+    if args.statusline:
+        do_statusline()
+    elif args.diag:
         do_diag(args)
     elif args.clear_cache:
         do_clear_cache(args)
