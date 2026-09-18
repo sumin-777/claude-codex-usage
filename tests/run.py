@@ -135,6 +135,48 @@ def statusline_check():
     return "valid write + 3 quiet invalid + UTF-8 stdout"
 
 
+def codex_limits_check():
+    """한도에 걸린 순간의 빈 보고가 마지막 한도 값을 지우면 안 된다 (미터가 통째로 사라진다)."""
+    collect = load("codex_limits_collect", ROOT / "src" / "collect.py")
+    path = Path(tempfile.mkdtemp(prefix="codex-", dir=TEST_HOME)) / "rollout.jsonl"
+
+    # 한도에 걸린 순간의 진짜 기록은 info 가 dict 이고 rate_limits 의 primary/secondary 만 null 이다
+    # (2026-09-18 실측). info 를 None 으로 두면 앞 조건에서 걸러져 이 경로를 못 밟는다.
+    usage = {"input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 5, "total_tokens": 15}
+
+    def report(ts, limits, tokens):
+        info = {"total_token_usage": dict(usage, total_tokens=tokens),
+                "last_token_usage": usage}
+        return {"timestamp": ts, "type": "event_msg",
+                "payload": {"type": "token_count", "info": info, "rate_limits": limits}}
+
+    full = {"primary": {"used_percent": 90.0, "window_minutes": 300, "resets_at": 1789700000},
+            "secondary": {"used_percent": 40.0, "window_minutes": 10080, "resets_at": 1790000000},
+            "plan_type": "plus"}
+    write_jsonl(path, [report("2026-09-18T01:00:00.000Z", full, 15),
+                       report("2026-09-18T01:05:00.000Z",
+                              {"limit_id": "premium", "primary": None, "secondary": None,
+                               "plan_type": None}, 30)])
+    _, _, limits, _ = collect.parse_codex_file(path)
+    assert limits, "빈 보고가 마지막 한도 값을 지웠다"
+    assert [w["used_percent"] for w in limits["windows"]] == [90.0, 40.0], limits
+    assert limits["plan"] == "plus", limits
+
+    # 빈 보고만 있는 파일은 한도를 만들지 않고, 창이 없는 옛 캐시 기록은 최신값으로 뽑히지 않는다.
+    only_empty = Path(str(path) + ".empty")
+    write_jsonl(only_empty, [report("2026-09-18T02:00:00.000Z",
+                                    {"primary": None, "secondary": None}, 15)])
+    _, _, none_limits, _ = collect.parse_codex_file(only_empty)
+    assert none_limits is None, none_limits
+    payload = collect.make_codex_payload([
+        {"daily": {}, "limits": limits},
+        {"daily": {}, "limits": {"at": "2026-09-18T09:00:00.000Z", "plan": None, "windows": []}},
+    ])
+    assert payload["limits"]["windows"], payload["limits"]
+    assert payload["limits"]["windows"][0]["used_percent"] == 90.0, payload["limits"]
+    return "빈 한도 보고 무시 (파일·병합)"
+
+
 def fixture():
     collect = load("fixture_collect", ROOT / "src" / "collect.py")
     server = load("fixture_server", ROOT / "claude-usage.py")
@@ -261,7 +303,7 @@ def main():
     parser.add_argument("--no-js", action="store_true")
     options = parser.parse_args()
     checks = [("syntax", syntax_check), ("names_units", names_units), ("statusline", statusline_check),
-              ("fixture", fixture), ("merge", merge_check)]
+              ("codex_limits", codex_limits_check), ("fixture", fixture), ("merge", merge_check)]
     failed = 0
     try:
         for label, check in checks:

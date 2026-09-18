@@ -1095,7 +1095,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         Object.keys(totals).forEach(function (k) { totals[k] += b[k] || 0; });
       });
       var l = C.limits;
-      if (l && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
+      // 창이 비어 있는 보고(한도에 걸린 순간 OpenAI 가 null 로 준다)는 건너뛴다. 아니면 미터가 사라진다.
+      if (l && (l.windows || []).length && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
     });
     var loaded = Object.keys(state.machines);
     var hasCodex = loaded.some(function (id) {

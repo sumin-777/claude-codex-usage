@@ -132,7 +132,7 @@ def decode_project(dirname):
 
 
 # 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
-COLLECTOR_VERSION = "2026-09-17"
+COLLECTOR_VERSION = "2026-09-18"
 
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _FIRST_CWD = {}
@@ -471,7 +471,9 @@ def parse_codex_file(path, start_off=0, previous_total=None):
                     if pct is not None:
                         key = "%s:%s" % (w.get("window_minutes"), w.get("resets_at"))
                         peaks[key] = max(peaks.get(key, 0.0), float(pct))
-                if newest is None or timestamp > newest["at"]:
+                # 한도에 걸리면 OpenAI 가 primary·secondary 를 null 로 보낸다. 그 빈 보고를
+                # 최신값으로 삼으면 미터가 통째로 사라진다 ― 마지막으로 값이 있던 보고를 유지한다.
+                if windows and (newest is None or timestamp > newest["at"]):
                     newest = {"at": timestamp, "plan": limits.get("plan_type"), "windows": windows}
     if newest is not None and peaks:
         newest["peaks"] = peaks
@@ -492,7 +494,8 @@ def make_codex_payload(entries, since=None, until=None):
             continue
         for key, pct in (limit.get("peaks") or {}).items():
             peaks[key] = max(peaks.get(key, 0.0), pct)
-        if newest is None or limit.get("at", "") > newest.get("at", ""):
+        # 창이 없는 기록(옛 캐시의 빈 보고)은 최신값으로 쓰지 않는다. 위 parse_codex_file 과 같은 이유다.
+        if limit.get("windows") and (newest is None or limit.get("at", "") > newest.get("at", "")):
             newest = limit
     if not daily and newest is None:
         return None
@@ -2060,7 +2063,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         Object.keys(totals).forEach(function (k) { totals[k] += b[k] || 0; });
       });
       var l = C.limits;
-      if (l && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
+      // 창이 비어 있는 보고(한도에 걸린 순간 OpenAI 가 null 로 준다)는 건너뛴다. 아니면 미터가 사라진다.
+      if (l && (l.windows || []).length && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
     });
     var loaded = Object.keys(state.machines);
     var hasCodex = loaded.some(function (id) {
@@ -3152,8 +3156,8 @@ def load_remote(local_id=None):
 
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
-CODEX_CACHE_VERSION = 1
-PAYLOAD_CACHE_VERSION = 4   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits)
+CODEX_CACHE_VERSION = 2     # 2 한도 빈 보고를 최신값으로 쓰지 않는다
+PAYLOAD_CACHE_VERSION = 5   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits, 5 한도 빈 보고 무시)
 
 
 def _cache_path(rel):

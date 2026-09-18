@@ -117,8 +117,8 @@ def load_remote(local_id=None):
 
 CACHE_DIR = STORE / "cache"
 CACHE_VERSION = 4
-CODEX_CACHE_VERSION = 1
-PAYLOAD_CACHE_VERSION = 4   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits)
+CODEX_CACHE_VERSION = 2     # 2 한도 빈 보고를 최신값으로 쓰지 않는다
+PAYLOAD_CACHE_VERSION = 5   # payload 를 만드는 규칙이 바뀌면 올린다 (4 claude_limits, 5 한도 빈 보고 무시)
 
 
 def _cache_path(rel):
