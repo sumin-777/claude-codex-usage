@@ -132,7 +132,7 @@ def decode_project(dirname):
 
 
 # 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
-COLLECTOR_VERSION = "2026-09-18"
+COLLECTOR_VERSION = "2026-09-22"
 
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _FIRST_CWD = {}
@@ -217,6 +217,10 @@ def normalize_payload_usage(payload):
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
                     bucket.setdefault(key, 0)
+        # 한도에 걸린 순간의 빈 보고(창 없음)를 옛 수집기가 보내올 수 있다. 남기면 미터가 사라진다.
+        limits = codex.get("limits")
+        if isinstance(limits, dict) and not limits.get("windows"):
+            codex.pop("limits", None)
     recent = payload.get("recent_sessions")
     clean = {}
     if isinstance(recent, dict):
@@ -258,7 +262,7 @@ def normalize_claude_limits(value):
             continue
         used, reset = window.get("used_percentage"), window.get("resets_at")
         if (not isinstance(used, (int, float)) or isinstance(used, bool) or
-                not math.isfinite(used) or used < 0 or used > 100 or
+                not math.isfinite(used) or used < 0 or
                 not isinstance(reset, (int, float)) or isinstance(reset, bool) or
                 not math.isfinite(reset) or reset <= 0):
             continue
@@ -266,9 +270,13 @@ def normalize_claude_limits(value):
     return clean if len(clean) > 1 else None
 
 
+# 상태줄(--statusline)이 쓰고 payload 가 읽는 파일. 쓰는 쪽과 읽는 쪽이 이 하나만 본다.
+CLAUDE_LIMITS_FILE = Path.home() / ".claude-usage" / "claude_limits.json"
+
+
 def load_claude_limits():
     try:
-        with (Path.home() / ".claude-usage" / "claude_limits.json").open("r", encoding="utf-8") as f:
+        with CLAUDE_LIMITS_FILE.open("r", encoding="utf-8") as f:
             return normalize_claude_limits(json.load(f))
     except (OSError, ValueError, AttributeError):
         return None
@@ -494,8 +502,7 @@ def make_codex_payload(entries, since=None, until=None):
             continue
         for key, pct in (limit.get("peaks") or {}).items():
             peaks[key] = max(peaks.get(key, 0.0), pct)
-        # 창이 없는 기록(옛 캐시의 빈 보고)은 최신값으로 쓰지 않는다. 위 parse_codex_file 과 같은 이유다.
-        if limit.get("windows") and (newest is None or limit.get("at", "") > newest.get("at", "")):
+        if newest is None or limit.get("at", "") > newest.get("at", ""):
             newest = limit
     if not daily and newest is None:
         return None
@@ -965,7 +972,6 @@ import webbrowser
 from pathlib import Path as _Path
 
 STORE = _Path.home() / ".claude-usage"
-CLAUDE_LIMITS_FILE = STORE / "claude_limits.json"
 PAGE = r"""<title>Claude · Codex 토큰 미터</title>
 
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1954,24 +1960,52 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return xs.length % 2 ? xs[middle] : (xs[middle - 1] + xs[middle]) / 2;
   }
 
-  function latestClaudeLimits(now) {
-    var newest = null;
+  // 한 시간 버킷의 사용량(모든 머신 합).
+  function claudeHourUnits(key) {
+    var total = 0;
     Object.keys(state.machines).forEach(function (id) {
-      var payload = state.machines[id], limits = payload.claude_limits;
-      if (!limits || !limits.seven_day || Number(limits.seven_day.resets_at) * 1000 <= now.getTime()) return;
-      var at = new Date(limits.recorded_at).getTime();
-      if (!isFinite(at) || (newest && at <= newest.at)) return;
-      newest = {
-        at: at, recorded_at: limits.recorded_at,
-        pct: Number(limits.seven_day.used_percentage),
-        seven_day: limits.seven_day, five_hour: limits.five_hour || null,
-        machine: (payload.machine && payload.machine.label) || id
-      };
+      var hourly = state.machines[id].hourly;
+      if (hourly && typeof hourly === "object" && hourly[key]) total += claudeBucketUnits(hourly[key]);
     });
-    return newest;
+    return total;
   }
 
-  function estimateClaudeWeekly(now, settings, live) {
+  // date 시각까지의 사용량. date 가 속한 시간의 버킷은 그 안에서 date 앞부분 비율만큼만 센다 ―
+  // 전부 세면 기준점 뒤 같은 시간 안에 쓴 양이 추정에서 영영 빠진다. 버킷이 담은 구간은 지난 시간이면 한 시간 전체,
+  // 지금 진행 중인 시간이면 정각부터 now 까지다(한 시간으로 나누면 방금 받은 실제값 위에 그 시간 사용량이 부풀어 더해진다).
+  // 키 문자열로 날짜 산술을 하지 않으려고 뺄셈을 쓴다.
+  function claudeUnitsAt(startKey, date, now) {
+    var key = hourKey(date);
+    if (key < startKey) return 0;
+    var minute = function (d) { return d.getMinutes() + d.getSeconds() / 60; };
+    var span = now && key === hourKey(now) ? minute(now) : 60;
+    var before = span > 0 ? Math.min(1, minute(date) / span) : 1;
+    return claudeUnits(startKey, key) - claudeHourUnits(key) * (1 - before);
+  }
+
+  // 상태줄이 받은 실제값. 주간·5시간을 따로 고른다 ― 리셋이 지난 창은 버린다.
+  function latestClaudeLimits(now) {
+    var best = {weekly:null, fiveHour:null};
+    Object.keys(state.machines).forEach(function (id) {
+      var payload = state.machines[id], limits = payload.claude_limits;
+      if (!limits) return;
+      var at = new Date(limits.recorded_at).getTime();
+      if (!isFinite(at)) return;
+      [["seven_day", "weekly"], ["five_hour", "fiveHour"]].forEach(function (pair) {
+        var w = limits[pair[0]];
+        if (!w || Number(w.resets_at) * 1000 <= now.getTime()) return;
+        if (best[pair[1]] && at <= best[pair[1]].at) return;
+        best[pair[1]] = {
+          at: at, recorded_at: limits.recorded_at, pct: Number(w.used_percentage), resets_at: w.resets_at,
+          machine: (payload.machine && payload.machine.label) || id
+        };
+      });
+    });
+    return best.weekly || best.fiveHour ? best : null;
+  }
+
+  // keepK: 스캔 중이라 시간별 기록이 덜 들어왔을 수 있으면 재계산한 k 를 보정 기록에 쓰지 않는다.
+  function estimateClaudeWeekly(now, settings, live, keepK) {
     var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
     var current = hourKey(now), slopes = [], changed = false, anchor = null, latestManualAt = -Infinity;
     (settings.calibrations || []).filter(function (cal) {
@@ -1983,21 +2017,24 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       if (calStart === start) anchor = cal;
       if (pct <= 0) return;
       // 이번 창만 다시 계산한다. 지난 창은 머신마다 시간별 기록이 남은 날이 달라 모자라게 셀 수 있어 저장값을 쓴다.
-      var units = calStart === start ? claudeUnits(start, hourKey(at)) : 0, k = Number(cal.k);
+      var units = calStart === start ? claudeUnitsAt(start, at, now) : 0, k = Number(cal.k);
       if (units > 0) {
         k = units / pct;
-        if (!isFinite(Number(cal.k)) || Math.abs(Number(cal.k) - k) > 1e-9) { cal.k = k; changed = true; }
+        if (!keepK && (!isFinite(Number(cal.k)) || Math.abs(Number(cal.k) - k) > 1e-9)) { cal.k = k; changed = true; }
       } else if (!isFinite(k) || k <= 0) return;
       slopes.push({cal:cal, k:k});
     });
-    if (live && live.at > latestManualAt) {
-      anchor = {at:live.at, pct:live.pct, live:true, machine:live.machine};
+    // 실제값은 수동 보정보다 새롭고 이 창 안에서 기록됐을 때만 기준점이 된다. 창 시작 전 값을 쓰면
+    // baseUnits 가 0 이 되어 창 전체 사용량이 실제값 위에 한 번 더 더해진다(설정한 리셋 시각이 실제와 어긋날 때).
+    var lw = live && live.weekly;
+    if (lw && lw.at > latestManualAt && hourKey(new Date(lw.at)) >= start) {
+      anchor = {at:lw.at, pct:lw.pct, live:true, machine:lw.machine};
     }
     // 주간 안에서도 비율이 약 20% 흔들려 최근 보정값만 쓴다.
     slopes = slopes.slice(-5);
     var ks = slopes.map(function (item) { return item.k; }), used = claudeUnits(start, current);
     var k = ks.length ? median(ks) : null, kMin = ks.length ? Math.min.apply(null, ks) : null, kMax = ks.length ? Math.max.apply(null, ks) : null;
-    var base = anchor ? Number(anchor.pct) : 0, baseUnits = anchor ? claudeUnits(start, hourKey(new Date(anchor.at))) : 0;
+    var base = anchor ? Number(anchor.pct) : 0, baseUnits = anchor ? claudeUnitsAt(start, new Date(anchor.at), now) : 0;
     var inc = Math.max(0, used - baseUnits);
     return {
       startKey: start,
@@ -2016,33 +2053,38 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   function renderClaudeWeekly() {
     var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
     var now = new Date(), live = latestClaudeLimits(now), result;
-    try { result = estimateClaudeWeekly(now, claudeWeekly, live); }
+    try { result = estimateClaudeWeekly(now, claudeWeekly, live, state.scanning); }
     catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(now, 4, 15), anchor:null, calibrations:[]}; }
     if (result.changed) saveClaudeWeeklySettings();
     var reset = localTime(new Date(result.nextResetKey + ":00:00"));
     var hasEstimate = result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high);
-    if (live) {
-      text.textContent = "Claude 주간 실제 " + Math.round(live.pct) + "% · " +
-        relativeTime(live.recorded_at, now.getTime()) + " · " + live.machine +
-        " · 리셋 " + localTime(live.seven_day.resets_at) +
-        (live.five_hour ? " · 5시간 실제 " + Math.round(live.five_hour.used_percentage) + "%" : "");
+    var shown = hasEstimate ? Math.min(100, Math.round(result.estimate)) : null;   // 튀는 비율 하나가 수백 %를 만들 수 있다
+    var bar = function (pct) { fill.style.width = Math.max(0, Math.min(100, pct)) + "%"; };
+    var lw = live && live.weekly, l5 = live && live.fiveHour;
+    var fiveTail = l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "% · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine : "";
+    if (lw) {
+      text.textContent = "Claude 주간 실제 " + Math.round(lw.pct) + "% · " +
+        relativeTime(lw.recorded_at, now.getTime()) + " · " + lw.machine +
+        " · 리셋 " + localTime(lw.resets_at) +
+        (l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "%" : "");
       if (hasEstimate) {
-        text.textContent += " · 추정 ≈" + Math.round(result.estimate) + "% · 기준 " +
+        text.textContent += " · 추정 ≈" + shown + "% · 기준 " +
           (result.anchor && result.anchor.live ? "실제값" :
             (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%")) +
           " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회";
       }
-      fill.style.width = Math.max(0, Math.min(100, live.pct)) + "%";
+      // 실제값이 기준이어도 그 뒤 사용량(또는 더 새 수동 보정)이 반영된 추정이 지금에 더 가깝다.
+      bar(hasEstimate ? result.estimate : lw.pct);
     } else if (hasEstimate) {
-      var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));   // 튀는 비율 하나가 수백 %를 만들 수 있다
-      text.textContent = "Claude 주간 ≈" + Math.round(result.estimate) + "%" +
+      var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));
+      text.textContent = "Claude 주간 ≈" + shown + "%" +
         (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
         " · 리셋 " + reset + " · 기준 " + (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%") +
-        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정";
-      fill.style.width = Math.max(0, Math.min(100, result.estimate)) + "%";
+        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정" + fiveTail;
+      bar(result.estimate);
     } else {
-      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
-      fill.style.width = "0%";
+      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset + fiveTail;
+      bar(0);
     }
     var missing = Object.keys(state.machines).filter(function (id) {
       var H = state.machines[id].hourly;
@@ -2063,8 +2105,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         Object.keys(totals).forEach(function (k) { totals[k] += b[k] || 0; });
       });
       var l = C.limits;
-      // 창이 비어 있는 보고(한도에 걸린 순간 OpenAI 가 null 로 준다)는 건너뛴다. 아니면 미터가 사라진다.
-      if (l && (l.windows || []).length && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
+      // 창이 빈 보고는 normalizePayload 가 이미 뺐다.
+      if (l && (!newest || (l.at || "") > (newest.at || ""))) { newest = l; newestId = id; }
     });
     var loaded = Object.keys(state.machines);
     var hasCodex = loaded.some(function (id) {
@@ -2800,7 +2842,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       var window = value[name];
       if (!window || typeof window !== "object" || Array.isArray(window)) return;
       var used = window.used_percentage, reset = window.resets_at;
-      if (typeof used !== "number" || !isFinite(used) || used < 0 || used > 100 ||
+      if (typeof used !== "number" || !isFinite(used) || used < 0 ||
           typeof reset !== "number" || !isFinite(reset) || reset <= 0) return;
       clean[name] = {used_percentage:used, resets_at:reset};
     });
@@ -2819,6 +2861,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       Object.keys(payload.codex.daily || {}).forEach(function (day) {
         normalizeBucket(payload.codex.daily[day]);
       });
+      // 한도에 걸린 순간의 빈 보고(창 없음)를 옛 수집기가 보내올 수 있다. 최신값으로 뽑히면 미터가 사라진다.
+      var cl = payload.codex.limits;
+      if (cl && !(Array.isArray(cl.windows) && cl.windows.length)) delete payload.codex.limits;
     }
     if (!Array.isArray(payload.limit_hits)) payload.limit_hits = [];
     var recent = payload.recent_sessions;
@@ -3598,7 +3643,23 @@ def build_payload_incremental(args):
     return payload
 
 
+def _statusline_print(text):
+    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
+    try:
+        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+        _sys.stdout.buffer.flush()
+    except Exception:
+        try:
+            print(console_safe(text))
+        except Exception:
+            pass
+
+
 def do_statusline():
+    if _sys.stdin is None or _sys.stdin.isatty():
+        # 손으로 실행하면 stdin 입력을 기다리며 멈춘 것처럼 보인다. 상태줄 연결용이라고만 알린다.
+        _statusline_print("Claude Code 상태줄(statusLine)에 연결해 쓰는 명령입니다")
+        return
     text = "Claude 한도 -"
     tmp = None
     try:
@@ -3611,7 +3672,7 @@ def do_statusline():
                     value[name] = raw[name]
         limits = normalize_claude_limits(value)
         if limits:
-            STORE.mkdir(parents=True, exist_ok=True)
+            CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = CLAUDE_LIMITS_FILE.with_name(
                 CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
             with tmp.open("w", encoding="utf-8") as f:
@@ -3631,15 +3692,7 @@ def do_statusline():
                 tmp.unlink()
             except OSError:
                 pass
-    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
-    try:
-        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
-        _sys.stdout.buffer.flush()
-    except Exception:
-        try:
-            print(console_safe(text))
-        except Exception:
-            pass
+    _statusline_print(text)
 
 
 def scan_local(args):
@@ -3775,7 +3828,9 @@ def collect_all(args):
     lid = cached["machine"]["id"] if cached else None
     data = load_remote(lid)
     if cached:
-        data.insert(0, cached)
+        # 상태줄은 매 렌더마다 파일을 고치지만 재스캔은 트랜스크립트가 바뀔 때만 돈다.
+        # 작은 파일이니 응답할 때마다 다시 읽어 붙인다(스캔 결과 객체는 건드리지 않게 얕은 복사).
+        data.insert(0, attach_claude_limits(dict(cached)))
     return {
         "machines": data,
         "scanning": bool(busy),

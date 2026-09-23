@@ -65,7 +65,7 @@ cell = recent.recentSessionCellText([], nowMs);
 assert.strictEqual(cell.main, "—");
 assert.strictEqual(cell.warning, "");
 
-const weekly = sandbox(["dayKey", "dayParse", "dayAdd", "weekdayOf", "two", "localDayKey", "hourKey", "claudeWindowStart", "claudeBucketUnits", "claudeUnits", "median", "latestClaudeLimits", "estimateClaudeWeekly"]);
+const weekly = sandbox(["dayKey", "dayParse", "dayAdd", "weekdayOf", "two", "localDayKey", "hourKey", "claudeWindowStart", "claudeBucketUnits", "claudeUnits", "claudeHourUnits", "claudeUnitsAt", "median", "latestClaudeLimits", "estimateClaudeWeekly"]);
 const L = (y, month, day, hour, minute) => new Date(y, month - 1, day, hour, minute || 0);
 const fri = now => weekly.claudeWindowStart(now, 4, 15);
 assert.strictEqual(fri(L(2026, 9, 18, 15, 0)), "2026-09-18T15");
@@ -83,25 +83,50 @@ let result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, cali
 assert.strictEqual(result.estimate, null); near(result.units, 2500); assert.strictEqual(result.nextResetKey, "2026-09-18T15");
 const cal1At = L(2026, 9, 12, 10, 20).getTime(), cal2At = L(2026, 9, 13, 8, 40).getTime(), oldAt = L(2026, 9, 3, 10, 0).getTime();
 let cal1 = { at: cal1At, pct: 10 };
+// 기준점이 속한 시간 버킷은 분 비율만큼만 앞선 사용으로 센다(claudeUnitsAt).
+// cal1(09-12 10:20): 창 시작(09-11T15)~10시 = 500+1000, 10시 버킷 1000 중 40/60 은 보정 뒤 → 1500 - 2000/3 = 2500/3, k1 = 250/3
+// cal2(09-13 08:40): 1850 - 350*(20/60) = 5200/3, k2 = 1300/9. 전체 사용 2500.
+const k1 = 250 / 3, k2 = 1300 / 9;
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1] });
-near(result.estimate, 10 + 1000 / 150); near(result.low, result.estimate); near(result.high, result.estimate); assert.strictEqual(result.anchor, cal1); near(cal1.k, 150); assert.strictEqual(result.changed, true);
+near(result.estimate, 10 + (2500 - 2500 / 3) / k1); near(result.low, result.estimate); near(result.high, result.estimate); assert.strictEqual(result.anchor, cal1); near(cal1.k, k1); assert.strictEqual(result.changed, true);
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1] });
 assert.strictEqual(result.changed, false);
+// 스캔 중(keepK)이면 계산에는 쓰되 보정 기록의 k 는 건드리지 않는다
+let fresh = { at: cal1At, pct: 10 };
+result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [fresh] }, null, true);
+assert.strictEqual(fresh.k, undefined); assert.strictEqual(result.changed, false); near(result.estimate, 10 + (2500 - 2500 / 3) / k1);
 cal1 = { at: cal1At, pct: 10 }; let cal2 = { at: cal2At, pct: 12 }, old = { at: oldAt, pct: 5 };
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] });
-let middle = (150 + 1850 / 12) / 2;
-assert.strictEqual(result.calibrations.length, 2); assert.strictEqual(result.anchor, cal2); near(result.estimate, 12 + 650 / middle); near(result.low, 12 + 650 / (1850 / 12)); near(result.high, 12 + 650 / 150);
-weekly.state.machines.a.claude_limits = { recorded_at: new Date(now.getTime() - 30 * 60e3).toISOString(), seven_day: { used_percentage: 64, resets_at: Math.floor(now.getTime() / 1000) + 86400 }, five_hour: { used_percentage: 65, resets_at: Math.floor(now.getTime() / 1000) + 3600 } };
+let middle = (k1 + k2) / 2, inc2 = 2500 - 5200 / 3;
+assert.strictEqual(result.calibrations.length, 2); assert.strictEqual(result.anchor, cal2); near(result.estimate, 12 + inc2 / middle); near(result.low, 12 + inc2 / k2); near(result.high, 12 + inc2 / k1);
+weekly.state.machines.a.claude_limits = { recorded_at: new Date(L(2026, 9, 14, 13, 0).getTime()).toISOString(), seven_day: { used_percentage: 64, resets_at: Math.floor(now.getTime() / 1000) + 86400 }, five_hour: { used_percentage: 65, resets_at: Math.floor(now.getTime() / 1000) + 3600 } };
 let live = weekly.latestClaudeLimits(now);
-assert.strictEqual(live.machine, "a"); assert.strictEqual(live.pct, 64);
+assert.strictEqual(live.weekly.machine, "a"); assert.strictEqual(live.weekly.pct, 64); assert.strictEqual(live.fiveHour.pct, 65);
+// 실제값(13:00)이 기준점. 13시 버킷(650)은 전부 그 뒤라 증가분으로 센다.
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] }, live);
-assert.strictEqual(result.anchor.live, true); near(result.estimate, 64);
+assert.strictEqual(result.anchor.live, true); near(result.estimate, 64 + 650 / middle);
+// 진행 중인 시간(13시, now 13:30)의 버킷은 정각~13:30 을 담는다. 13:20 기준점이면 뒤 1/3 만 증가분이다
+// (한 시간으로 나누면 2/3 이 되어 방금 받은 실제값 위에 부풀어 더해진다).
+weekly.state.machines.a.claude_limits.recorded_at = new Date(L(2026, 9, 14, 13, 20).getTime()).toISOString();
+result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] }, weekly.latestClaudeLimits(now));
+assert.strictEqual(result.anchor.live, true); near(result.estimate, 64 + (650 / 3) / middle);
+weekly.state.machines.a.claude_limits.recorded_at = new Date(L(2026, 9, 14, 13, 0).getTime()).toISOString();
+// 설정 창 시작(09-11T15)보다 앞서 기록된 실제값은 기준점이 되지 않는다 ― 되면 창 전체 사용량이 64% 위에 더해진다
+// (수동 보정은 지난 창 것 하나뿐이라 실제값이 더 새롭다 ― 창 조건만 가려낸다. 되돌리면 64 + 2500/200 = 76.5 가 나온다)
+weekly.state.machines.a.claude_limits.recorded_at = new Date(L(2026, 9, 11, 14, 0).getTime()).toISOString();
+result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [{ at: oldAt, pct: 5, k: 200 }] }, weekly.latestClaudeLimits(now));
+assert.strictEqual(result.anchor, null); near(result.estimate, 2500 / 200);
+weekly.state.machines.a.claude_limits.recorded_at = new Date(L(2026, 9, 14, 13, 0).getTime()).toISOString();
+// 주간이 만료돼도 5시간은 따로 남고, 5시간까지 만료되면 아무것도 없다
 weekly.state.machines.a.claude_limits.seven_day.resets_at = Math.floor(now.getTime() / 1000) - 1;
+live = weekly.latestClaudeLimits(now);
+assert.strictEqual(live.weekly, null); assert.strictEqual(live.fiveHour.pct, 65);
+weekly.state.machines.a.claude_limits.five_hour.resets_at = Math.floor(now.getTime() / 1000) - 1;
 assert.strictEqual(weekly.latestClaudeLimits(now), null);
 delete weekly.state.machines.a.claude_limits;
 cal1 = { at: cal1At, pct: 10 }; cal2 = { at: cal2At, pct: 12 }; old = { at: oldAt, pct: 5, k: 200 };
 result = weekly.estimateClaudeWeekly(now, { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, old] });
-assert.strictEqual(result.calibrations.length, 3); near(result.estimate, 12 + 650 / (1850 / 12)); near(result.low, 12 + 650 / 200); near(result.high, 12 + 650 / 150);
+assert.strictEqual(result.calibrations.length, 3); near(result.estimate, 12 + inc2 / k2); near(result.low, 12 + inc2 / 200); near(result.high, 12 + inc2 / k1);
 weekly.state.machines.a.hourly["2026-09-19T09"] = { i: 300 };
 cal1 = { at: cal1At, pct: 10, k: 140 }; cal2 = { at: cal2At, pct: 12, k: 1850 / 12 };
 result = weekly.estimateClaudeWeekly(L(2026, 9, 19, 10, 0), { resetDow: 4, resetHour: 15, calibrations: [cal1, cal2, { at: cal2At, pct: 12 }] });
@@ -114,4 +139,15 @@ const limits = sandbox(["normalizeClaudeLimits"]);
 let cleanLimits = limits.normalizeClaudeLimits({ recorded_at:"2026-09-17T01:02:03Z", account:"secret", seven_day:{used_percentage:64,resets_at:1789711200,extra:true} });
 assert.deepStrictEqual(JSON.parse(JSON.stringify(cleanLimits)), { recorded_at:"2026-09-17T01:02:03Z", seven_day:{used_percentage:64,resets_at:1789711200} });
 assert.strictEqual(limits.normalizeClaudeLimits({ recorded_at:"bad", seven_day:{used_percentage:64,resets_at:1} }), null);
+// 한도를 넘긴 값(100 초과)도 버리지 않는다 ― 버리면 가장 궁금한 순간에 옛 값이 '실제'로 남는다
+assert.strictEqual(limits.normalizeClaudeLimits({ recorded_at:"2026-09-17T01:02:03Z", seven_day:{used_percentage:105,resets_at:1789711200} }).seven_day.used_percentage, 105);
+assert.strictEqual(limits.normalizeClaudeLimits({ recorded_at:"2026-09-17T01:02:03Z", seven_day:{used_percentage:-1,resets_at:1789711200} }), null);
+// 창이 빈 Codex 한도 보고는 받을 때 뺀다(옛 수집기가 보내올 수 있다). 창이 있으면 그대로 둔다.
+const payloads = sandbox(["normalizeBucket", "normalizeClaudeLimits", "normalizePayload"]);
+let codexPayload = { totals: {}, codex: { totals: {}, daily: {}, limits: { at: "2026-09-18T07:34:19Z", plan: "plus", windows: [] } } };
+payloads.normalizePayload(codexPayload);
+assert.strictEqual(codexPayload.codex.limits, undefined); assert.ok(codexPayload.codex.daily);
+codexPayload = { totals: {}, codex: { totals: {}, daily: {}, limits: { at: "x", windows: [{ used_percent: 90, window_minutes: 300, resets_at: 1 }] } } };
+payloads.normalizePayload(codexPayload);
+assert.strictEqual(codexPayload.codex.limits.windows.length, 1);
 console.log(tz + " OK");

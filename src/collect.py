@@ -119,7 +119,7 @@ def decode_project(dirname):
 
 
 # 수집 JSON 에 필드를 더하거나 수집 규칙을 바꾸면 올린다. 대시보드가 옛 수집기를 쓰는 머신을 짚는 데 쓴다.
-COLLECTOR_VERSION = "2026-09-18"
+COLLECTOR_VERSION = "2026-09-22"
 
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
 _FIRST_CWD = {}
@@ -204,6 +204,10 @@ def normalize_payload_usage(payload):
             if isinstance(bucket, dict):
                 for key in BUCKET_KEYS:
                     bucket.setdefault(key, 0)
+        # 한도에 걸린 순간의 빈 보고(창 없음)를 옛 수집기가 보내올 수 있다. 남기면 미터가 사라진다.
+        limits = codex.get("limits")
+        if isinstance(limits, dict) and not limits.get("windows"):
+            codex.pop("limits", None)
     recent = payload.get("recent_sessions")
     clean = {}
     if isinstance(recent, dict):
@@ -245,7 +249,7 @@ def normalize_claude_limits(value):
             continue
         used, reset = window.get("used_percentage"), window.get("resets_at")
         if (not isinstance(used, (int, float)) or isinstance(used, bool) or
-                not math.isfinite(used) or used < 0 or used > 100 or
+                not math.isfinite(used) or used < 0 or
                 not isinstance(reset, (int, float)) or isinstance(reset, bool) or
                 not math.isfinite(reset) or reset <= 0):
             continue
@@ -253,9 +257,13 @@ def normalize_claude_limits(value):
     return clean if len(clean) > 1 else None
 
 
+# 상태줄(--statusline)이 쓰고 payload 가 읽는 파일. 쓰는 쪽과 읽는 쪽이 이 하나만 본다.
+CLAUDE_LIMITS_FILE = Path.home() / ".claude-usage" / "claude_limits.json"
+
+
 def load_claude_limits():
     try:
-        with (Path.home() / ".claude-usage" / "claude_limits.json").open("r", encoding="utf-8") as f:
+        with CLAUDE_LIMITS_FILE.open("r", encoding="utf-8") as f:
             return normalize_claude_limits(json.load(f))
     except (OSError, ValueError, AttributeError):
         return None
@@ -481,8 +489,7 @@ def make_codex_payload(entries, since=None, until=None):
             continue
         for key, pct in (limit.get("peaks") or {}).items():
             peaks[key] = max(peaks.get(key, 0.0), pct)
-        # 창이 없는 기록(옛 캐시의 빈 보고)은 최신값으로 쓰지 않는다. 위 parse_codex_file 과 같은 이유다.
-        if limit.get("windows") and (newest is None or limit.get("at", "") > newest.get("at", "")):
+        if newest is None or limit.get("at", "") > newest.get("at", ""):
             newest = limit
     if not daily and newest is None:
         return None

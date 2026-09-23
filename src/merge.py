@@ -58,7 +58,7 @@ def normalize_claude_limits(value):
             continue
         used, reset = window.get("used_percentage"), window.get("resets_at")
         if (not isinstance(used, (int, float)) or isinstance(used, bool) or
-                not math.isfinite(used) or used < 0 or used > 100 or
+                not math.isfinite(used) or used < 0 or
                 not isinstance(reset, (int, float)) or isinstance(reset, bool) or
                 not math.isfinite(reset) or reset <= 0):
             continue
@@ -103,6 +103,10 @@ def normalize_machine(d):
         d["claude_limits"] = limits
     else:
         d.pop("claude_limits", None)
+    # 한도에 걸린 순간의 빈 Codex 보고(창 없음)는 최신값으로 뽑히면 미터가 사라진다.
+    codex = d.get("codex")
+    if isinstance(codex, dict) and isinstance(codex.get("limits"), dict) and not codex["limits"].get("windows"):
+        codex.pop("limits", None)
     return d
 
 

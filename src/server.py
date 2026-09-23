@@ -54,7 +54,6 @@ import webbrowser
 from pathlib import Path as _Path
 
 STORE = _Path.home() / ".claude-usage"
-CLAUDE_LIMITS_FILE = STORE / "claude_limits.json"
 PAGE = r"""@@HTML@@"""
 
 SHELL = """<!doctype html>
@@ -559,7 +558,23 @@ def build_payload_incremental(args):
     return payload
 
 
+def _statusline_print(text):
+    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
+    try:
+        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
+        _sys.stdout.buffer.flush()
+    except Exception:
+        try:
+            print(console_safe(text))
+        except Exception:
+            pass
+
+
 def do_statusline():
+    if _sys.stdin is None or _sys.stdin.isatty():
+        # 손으로 실행하면 stdin 입력을 기다리며 멈춘 것처럼 보인다. 상태줄 연결용이라고만 알린다.
+        _statusline_print("Claude Code 상태줄(statusLine)에 연결해 쓰는 명령입니다")
+        return
     text = "Claude 한도 -"
     tmp = None
     try:
@@ -572,7 +587,7 @@ def do_statusline():
                     value[name] = raw[name]
         limits = normalize_claude_limits(value)
         if limits:
-            STORE.mkdir(parents=True, exist_ok=True)
+            CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
             tmp = CLAUDE_LIMITS_FILE.with_name(
                 CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
             with tmp.open("w", encoding="utf-8") as f:
@@ -592,15 +607,7 @@ def do_statusline():
                 tmp.unlink()
             except OSError:
                 pass
-    # Claude Code 는 상태줄 출력을 UTF-8 로 읽는다. 콘솔 인코딩(cp949 등)으로 내보내면 한글이 깨진다.
-    try:
-        _sys.stdout.buffer.write((text + "\n").encode("utf-8"))
-        _sys.stdout.buffer.flush()
-    except Exception:
-        try:
-            print(console_safe(text))
-        except Exception:
-            pass
+    _statusline_print(text)
 
 
 def scan_local(args):
@@ -736,7 +743,9 @@ def collect_all(args):
     lid = cached["machine"]["id"] if cached else None
     data = load_remote(lid)
     if cached:
-        data.insert(0, cached)
+        # 상태줄은 매 렌더마다 파일을 고치지만 재스캔은 트랜스크립트가 바뀔 때만 돈다.
+        # 작은 파일이니 응답할 때마다 다시 읽어 붙인다(스캔 결과 객체는 건드리지 않게 얕은 복사).
+        data.insert(0, attach_claude_limits(dict(cached)))
     return {
         "machines": data,
         "scanning": bool(busy),

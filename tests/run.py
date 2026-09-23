@@ -92,23 +92,41 @@ def names_units():
 
 def statusline_check():
     server = load("statusline_server", ROOT / "claude-usage.py")
-    # 사용자의 진짜 ~/.claude-usage 를 건드리면 안 된다 (마지막에 지운다).
-    home = Path(tempfile.mkdtemp())
-    server.STORE = home / ".claude-usage"
-    server.CLAUDE_LIMITS_FILE = server.STORE / "claude_limits.json"
+    # 하네스가 import 전에 HOME 을 TEST_HOME 으로 바꿔 두어, 쓰는 쪽·읽는 쪽이 함께 보는 경로가 TEST_HOME 아래다.
     path = server.CLAUDE_LIMITS_FILE
+    assert str(path).startswith(TEST_HOME), path
+    try:
+        return _statusline_cases(server, path)
+    finally:
+        if path.exists():
+            path.unlink()
 
-    def run(raw):
+
+class _TtyStdin(io.StringIO):
+    def isatty(self):
+        return True
+
+    def read(self, *args):
+        raise AssertionError("터미널 stdin 을 읽으려 했다 (입력을 기다리며 멈춘다)")
+
+
+def _statusline_cases(server, path):
+    def run(raw, stdin_type=io.StringIO):
         previous = server._sys.stdin
-        output = io.StringIO()
+        output = io.BytesIO()
+        wrapper = io.TextIOWrapper(output, encoding="utf-8")
         try:
-            server._sys.stdin = io.StringIO(raw)
-            with redirect_stdout(output):
+            server._sys.stdin = stdin_type(raw)
+            with redirect_stdout(wrapper):
                 server.do_statusline()
+            wrapper.flush()
         finally:
             server._sys.stdin = previous
-        return output.getvalue().strip()
+        return output.getvalue().decode("utf-8").strip()
 
+    # 손으로 실행(터미널 stdin)하면 읽지 않고 안내만 한다
+    assert "상태줄" in run("", _TtyStdin)
+    assert not path.exists()
     for raw in ("", "{broken", "{}"):
         if path.exists():
             path.unlink()
@@ -124,15 +142,17 @@ def statusline_check():
     assert saved["five_hour"] == {"used_percentage": 65, "resets_at": 1789642200}
     assert saved["seven_day"] == {"used_percentage": 64, "resets_at": 1789711200}
     assert datetime.strptime(saved["recorded_at"], "%Y-%m-%dT%H:%M:%S+00:00")
+    # 한도를 넘긴 값(100 초과)도 기록한다 ― 버리면 옛 값이 '실제'로 남는다
+    over = {"rate_limits": {"seven_day": {"used_percentage": 105, "resets_at": 1789711200}}}
+    assert run(json.dumps(over)) == "Claude 주간 105%"
+    assert json.loads(path.read_text(encoding="utf-8"))["seven_day"]["used_percentage"] == 105
 
     # 상태줄 출력은 콘솔 인코딩이 아니라 UTF-8 이어야 한다 (cp949 로 내보내면 Claude Code 화면에서 깨진다).
-    env = dict(os.environ, USERPROFILE=str(home), HOME=str(home))
+    # 하위 프로세스는 하네스가 바꿔 둔 HOME(TEST_HOME)을 그대로 물려받는다.
     proc = subprocess.run([sys.executable, str(ROOT / "claude-usage.py"), "--statusline"],
-                          input=json.dumps(sample).encode("utf-8"),
-                          stdout=subprocess.PIPE, env=env)
+                          input=json.dumps(sample).encode("utf-8"), stdout=subprocess.PIPE)
     assert proc.stdout.decode("utf-8").strip() == "Claude 5시간 65% · 주간 64%", proc.stdout
-    shutil.rmtree(str(home), ignore_errors=True)
-    return "valid write + 3 quiet invalid + UTF-8 stdout"
+    return "tty 안내 + valid write + 3 quiet invalid + 100 초과 + UTF-8 stdout"
 
 
 def codex_limits_check():
@@ -162,19 +182,60 @@ def codex_limits_check():
     assert [w["used_percent"] for w in limits["windows"]] == [90.0, 40.0], limits
     assert limits["plan"] == "plus", limits
 
-    # 빈 보고만 있는 파일은 한도를 만들지 않고, 창이 없는 옛 캐시 기록은 최신값으로 뽑히지 않는다.
+    # 빈 보고만 있는 파일은 한도를 만들지 않는다.
     only_empty = Path(str(path) + ".empty")
     write_jsonl(only_empty, [report("2026-09-18T02:00:00.000Z",
                                     {"primary": None, "secondary": None}, 15)])
     _, _, none_limits, _ = collect.parse_codex_file(only_empty)
     assert none_limits is None, none_limits
-    payload = collect.make_codex_payload([
-        {"daily": {}, "limits": limits},
-        {"daily": {}, "limits": {"at": "2026-09-18T09:00:00.000Z", "plan": None, "windows": []}},
-    ])
-    assert payload["limits"]["windows"], payload["limits"]
-    assert payload["limits"]["windows"][0]["used_percent"] == 90.0, payload["limits"]
-    return "빈 한도 보고 무시 (파일·병합)"
+
+    # 옛 수집기가 보낸 빈 한도(창 없음)는 받는 쪽 정규화에서 뺀다 ― 서버(save_snapshot/load_remote)와 merge.py 둘 다.
+    merge = load("codex_limits_merge", ROOT / "src" / "merge.py")
+
+    def remote(windows):
+        return {"codex": {"daily": {}, "totals": {},
+                          "limits": {"at": "2026-09-18T09:00:00.000Z", "plan": "plus", "windows": windows}}}
+
+    for normalize in (collect.normalize_payload_usage, merge.normalize_machine):
+        empty = normalize(remote([]))
+        assert "limits" not in empty["codex"], (normalize.__name__, empty)
+        assert "daily" in empty["codex"], empty
+        kept = normalize(remote(limits["windows"]))
+        assert kept["codex"]["limits"]["windows"] == limits["windows"], (normalize.__name__, kept)
+
+    # Claude 한도도 100 초과를 버리지 않는다 (collect 쪽은 statusline 검사가 본다)
+    over = merge.normalize_claude_limits({"recorded_at": "2026-09-17T01:02:03+00:00",
+                                          "seven_day": {"used_percentage": 105, "resets_at": 1789711200}})
+    assert over and over["seven_day"]["used_percentage"] == 105, over
+    return "빈 한도 보고 무시 (파일·받는 쪽 정규화) + merge 100 초과"
+
+
+def response_limits_check():
+    """claude_limits 는 재스캔을 기다리지 않고 응답할 때마다 새로 붙는다 (재스캔은 트랜스크립트가 바뀔 때만 돈다)."""
+    server = load("response_server", ROOT / "claude-usage.py")
+    cached = {"machine": {"id": "local", "label": "local"}, "totals": {}}
+    with server._scan_lock:
+        # busy 로 두면 collect_all 이 재스캔을 시작하지 않는다 (started=0 이면 경과 시간도 계산하지 않는다)
+        server._scan.update(payload=cached, busy=True, at=0.0, fp=None, started=0.0, secs=0.0)
+    args = SimpleNamespace(claude_dir=str(Path(TEST_HOME) / "no-claude"))
+    path = server.CLAUDE_LIMITS_FILE
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"recorded_at": "2026-09-22T01:00:00+00:00",
+                                    "seven_day": {"used_percentage": 40, "resets_at": 1790000000}}), encoding="utf-8")
+        first = server.collect_all(args)["machines"][0]
+        assert first["claude_limits"]["seven_day"]["used_percentage"] == 40, first
+        path.write_text(json.dumps({"recorded_at": "2026-09-22T01:05:00+00:00",
+                                    "seven_day": {"used_percentage": 41, "resets_at": 1790000000}}), encoding="utf-8")
+        second = server.collect_all(args)["machines"][0]
+        assert second["claude_limits"]["seven_day"]["used_percentage"] == 41, second
+        assert "claude_limits" not in cached, "스캔 결과 객체를 고쳐 썼다"
+    finally:
+        if path.exists():
+            path.unlink()
+        with server._scan_lock:
+            server._scan.update(payload=None, busy=False)
+    return "응답마다 새 값 + 스캔 결과 보존"
 
 
 def fixture():
@@ -303,7 +364,8 @@ def main():
     parser.add_argument("--no-js", action="store_true")
     options = parser.parse_args()
     checks = [("syntax", syntax_check), ("names_units", names_units), ("statusline", statusline_check),
-              ("codex_limits", codex_limits_check), ("fixture", fixture), ("merge", merge_check)]
+              ("codex_limits", codex_limits_check), ("response_limits", response_limits_check),
+              ("fixture", fixture), ("merge", merge_check)]
     failed = 0
     try:
         for label, check in checks:
