@@ -1211,6 +1211,8 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
 .limit-meter .mini { height:8px; margin-top:4px; }
+.limit-meter.warn .mini > i { background: var(--s4); }
+.limit-meter.danger .mini > i { background: var(--s8); }
 details.fold > summary { cursor:pointer; font-size:12px; color:var(--ink-mute); margin:10px 0 6px; }
 
 /* ---------- heatmap ---------- */
@@ -1911,12 +1913,16 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return best.weekly || best.fiveHour ? best : null;
   }
 
+  // 한도 미터 색: 80% 이상 노랑, 90% 이상 빨강
+  function limitLevel(pct) { return pct >= 90 ? "danger" : pct >= 80 ? "warn" : ""; }
+
   function renderClaudeLimits() {
     var now = new Date(), live = latestClaudeLimits(now), lw = live && live.weekly, l5 = live && live.fiveHour;
     var meter = function (key, label, value) {
       var box = document.getElementById("claude" + key + "Meter");
       box.hidden = !value;                     // 리셋이 지난 창은 latestClaudeLimits 가 이미 버렸다
       if (!value) return;
+      box.className = "limit-meter " + limitLevel(value.pct);
       document.getElementById("claude" + key + "Text").textContent = "Claude " + label + " 실제 " + Math.round(value.pct) +
         "% · 리셋 " + localTime(value.resets_at) + " · " + relativeTime(value.recorded_at, now.getTime()) + " · " + value.machine;
       document.getElementById("claude" + key + "Fill").style.width = Math.max(0, Math.min(100, value.pct)) + "%";
@@ -1955,7 +1961,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         var stale = w.resets_at && w.resets_at * 1000 < Date.now();
         var last = Number(w.used_percent || 0);
         var peak = Math.max(Number(w.peak_percent || 0), last);
-        var row = el("div", "limit-meter" + (stale ? " stale" : ""));
+        var row = el("div", "limit-meter " + (stale ? "stale" : limitLevel(peak)));   // 만료된 창은 지금 상태가 아니라 색을 안 입힌다
         row.appendChild(el("div", null, "Codex " + windowName(w.window_minutes) + " " +
           peak.toFixed(1) + "%" + (peak - last >= 1 ? " (최근 보고 " + last.toFixed(1) + "%)" : "") +
           " · 리셋 " + localTime(w.resets_at) +
