@@ -302,6 +302,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <h2>Claude · Codex 사용량</h2>
       <div class="note" id="codexNote"></div>
     </div>
+    <div class="limit-meter" id="claudeFiveMeter" hidden>
+      <div id="claudeFiveText"></div>
+      <div class="mini"><i id="claudeFiveFill"></i></div>
+    </div>
     <div class="limit-meter" id="claudeWeeklyMeter">
       <div id="claudeWeeklyText"></div>
       <div class="mini"><i id="claudeWeeklyFill"></i></div>
@@ -319,7 +323,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <summary>토큰 표</summary>
       <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
     </details>
-    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
+    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude "실제"는 Claude Code에 물어 받은 값이고, 없으면 Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
   </section>
 
   <section>
@@ -1087,12 +1091,17 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var shown = hasEstimate ? Math.min(100, Math.round(result.estimate)) : null;   // 튀는 비율 하나가 수백 %를 만들 수 있다
     var bar = function (pct) { fill.style.width = Math.max(0, Math.min(100, pct)) + "%"; };
     var lw = live && live.weekly, l5 = live && live.fiveHour;
-    var fiveTail = l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "% · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine : "";
+    var fiveMeter = document.getElementById("claudeFiveMeter");
+    fiveMeter.hidden = !l5;                    // 리셋이 지난 5시간 창은 latestClaudeLimits 가 이미 버렸다
+    if (l5) {
+      document.getElementById("claudeFiveText").textContent = "Claude 5시간 실제 " + Math.round(l5.pct) + "% · 리셋 " +
+        localTime(l5.resets_at) + " · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine;
+      document.getElementById("claudeFiveFill").style.width = Math.max(0, Math.min(100, l5.pct)) + "%";
+    }
     if (lw) {
       text.textContent = "Claude 주간 실제 " + Math.round(lw.pct) + "% · " +
         relativeTime(lw.recorded_at, now.getTime()) + " · " + lw.machine +
-        " · 리셋 " + localTime(lw.resets_at) +
-        (l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "%" : "");
+        " · 리셋 " + localTime(lw.resets_at);
       if (hasEstimate) {
         text.textContent += " · 추정 ≈" + shown + "% · 기준 " +
           (result.anchor && result.anchor.live ? "실제값" :
@@ -1106,10 +1115,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       text.textContent = "Claude 주간 ≈" + shown + "%" +
         (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
         " · 리셋 " + reset + " · 기준 " + (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%") +
-        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정" + fiveTail;
+        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정";
       bar(result.estimate);
     } else {
-      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset + fiveTail;
+      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
       bar(0);
     }
     var missing = Object.keys(state.machines).filter(function (id) {

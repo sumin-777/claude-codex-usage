@@ -1276,6 +1276,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <h2>Claude · Codex 사용량</h2>
       <div class="note" id="codexNote"></div>
     </div>
+    <div class="limit-meter" id="claudeFiveMeter" hidden>
+      <div id="claudeFiveText"></div>
+      <div class="mini"><i id="claudeFiveFill"></i></div>
+    </div>
     <div class="limit-meter" id="claudeWeeklyMeter">
       <div id="claudeWeeklyText"></div>
       <div class="mini"><i id="claudeWeeklyFill"></i></div>
@@ -1293,7 +1297,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <summary>토큰 표</summary>
       <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
     </details>
-    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
+    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude "실제"는 Claude Code에 물어 받은 값이고, 없으면 Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
   </section>
 
   <section>
@@ -2061,12 +2065,17 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var shown = hasEstimate ? Math.min(100, Math.round(result.estimate)) : null;   // 튀는 비율 하나가 수백 %를 만들 수 있다
     var bar = function (pct) { fill.style.width = Math.max(0, Math.min(100, pct)) + "%"; };
     var lw = live && live.weekly, l5 = live && live.fiveHour;
-    var fiveTail = l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "% · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine : "";
+    var fiveMeter = document.getElementById("claudeFiveMeter");
+    fiveMeter.hidden = !l5;                    // 리셋이 지난 5시간 창은 latestClaudeLimits 가 이미 버렸다
+    if (l5) {
+      document.getElementById("claudeFiveText").textContent = "Claude 5시간 실제 " + Math.round(l5.pct) + "% · 리셋 " +
+        localTime(l5.resets_at) + " · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine;
+      document.getElementById("claudeFiveFill").style.width = Math.max(0, Math.min(100, l5.pct)) + "%";
+    }
     if (lw) {
       text.textContent = "Claude 주간 실제 " + Math.round(lw.pct) + "% · " +
         relativeTime(lw.recorded_at, now.getTime()) + " · " + lw.machine +
-        " · 리셋 " + localTime(lw.resets_at) +
-        (l5 ? " · 5시간 실제 " + Math.round(l5.pct) + "%" : "");
+        " · 리셋 " + localTime(lw.resets_at);
       if (hasEstimate) {
         text.textContent += " · 추정 ≈" + shown + "% · 기준 " +
           (result.anchor && result.anchor.live ? "실제값" :
@@ -2080,10 +2089,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       text.textContent = "Claude 주간 ≈" + shown + "%" +
         (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
         " · 리셋 " + reset + " · 기준 " + (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%") +
-        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정" + fiveTail;
+        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정";
       bar(result.estimate);
     } else {
-      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset + fiveTail;
+      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
       bar(0);
     }
     var missing = Object.keys(state.machines).filter(function (id) {
@@ -3669,13 +3678,26 @@ def _statusline_print(text):
             pass
 
 
+def _write_claude_limits(limits):
+    CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CLAUDE_LIMITS_FILE.with_name(CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
+        tmp.replace(CLAUDE_LIMITS_FILE)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def do_statusline():
     if _sys.stdin is None or _sys.stdin.isatty():
         # 손으로 실행하면 stdin 입력을 기다리며 멈춘 것처럼 보인다. 상태줄 연결용이라고만 알린다.
         _statusline_print("Claude Code 상태줄(statusLine)에 연결해 쓰는 명령입니다")
         return
     text = "Claude 한도 -"
-    tmp = None
     try:
         incoming = _json.load(_sys.stdin)
         raw = incoming.get("rate_limits") if isinstance(incoming, dict) else None
@@ -3686,12 +3708,7 @@ def do_statusline():
                     value[name] = raw[name]
         limits = normalize_claude_limits(value)
         if limits:
-            CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = CLAUDE_LIMITS_FILE.with_name(
-                CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
-            with tmp.open("w", encoding="utf-8") as f:
-                _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
-            tmp.replace(CLAUDE_LIMITS_FILE)
+            _write_claude_limits(limits)
             parts = []
             for name, label in (("five_hour", "5시간"), ("seven_day", "주간")):
                 if name in limits:
@@ -3700,13 +3717,89 @@ def do_statusline():
             text = "Claude " + " · ".join(parts)
     except Exception:
         pass
-    finally:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
     _statusline_print(text)
+
+
+CLAUDE_PROBE_INTERVAL = 300.0   # 초. 사용량 조회를 너무 자주 부르면 429 가 난다(다른 도구들 사례)
+
+
+def _claude_exe():
+    """데스크톱 앱에 딸린 최신 Claude Code. get_usage 제어 요청은 2.1.274 부터 받는다."""
+    def version(p):
+        try:
+            return tuple(int(x) for x in p.parent.name.split("."))
+        except ValueError:
+            return ()
+    appdata = os.environ.get("APPDATA")
+    found = sorted(_Path(appdata).glob("Claude/claude-code/*/claude.exe"), key=version) if appdata else []
+    return str(found[-1]) if found else shutil.which("claude")
+
+
+def usage_to_limits(rate_limits):
+    """get_usage 응답의 rate_limits(utilization 0~100, resets_at ISO) → 상태줄과 같은 형식."""
+    value = {"recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    for name in ("five_hour", "seven_day"):
+        w = rate_limits.get(name) if isinstance(rate_limits, dict) else None
+        reset = parse_ts(w.get("resets_at")) if isinstance(w, dict) else None
+        if reset is not None:
+            value[name] = {"used_percentage": w.get("utilization"), "resets_at": reset.timestamp()}
+    return normalize_claude_limits(value)
+
+
+def probe_claude_limits():
+    """Claude Code 에 get_usage 제어 요청을 보내 실제 한도 %를 받아 기록한다.
+    모델을 부르지 않고 트랜스크립트도 남지 않는다(2026-09-28 실측). 실험 API 라 실패하면 조용히 None."""
+    exe = _claude_exe()
+    if not exe:
+        return None
+    STORE.mkdir(parents=True, exist_ok=True)
+    req = {"type": "control_request", "request_id": "usage",
+           "request": {"subtype": "get_usage", "skip_behaviors": True}}
+    try:
+        # --setting-sources "" : 사용자 훅(SessionStart 등)을 5분마다 돌리지 않는다
+        p = subprocess.Popen([exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                              "--verbose", "--setting-sources", ""],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             cwd=str(STORE), creationflags=0x08000000 if os.name == "nt" else 0)  # NO_WINDOW
+    except OSError:
+        return None
+    timer = threading.Timer(30, p.kill)       # 응답이 안 오면 stdout 읽기가 영영 안 끝난다
+    timer.start()
+    rate_limits = None
+    try:
+        p.stdin.write((_json.dumps(req) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        for line in p.stdout:
+            try:
+                rec = _json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("type") == "control_response":
+                resp = (rec.get("response") or {}).get("response")
+                rate_limits = resp.get("rate_limits") if isinstance(resp, dict) else None
+                break
+    except (OSError, ValueError):
+        pass
+    finally:
+        timer.cancel()
+        try:
+            p.kill()
+        except OSError:
+            pass
+        p.wait()
+    limits = usage_to_limits(rate_limits)
+    if limits:
+        _write_claude_limits(limits)
+    return limits
+
+
+def _probe_loop():
+    while True:
+        try:
+            probe_claude_limits()
+        except Exception as e:                 # 조회가 죽어도 서버는 살아 있어야 한다
+            print(f"  ! Claude 한도 조회 실패: {e}", file=sys.stderr)
+        time.sleep(CLAUDE_PROBE_INTERVAL)
 
 
 def scan_local(args):
@@ -4046,7 +4139,7 @@ def do_daemon(args):
             f"\n  20초 안에 응답이 없어 포기했습니다. 로그를 확인하세요:\n  {LOGFILE}\n"
         )
 
-    info = {"pid": proc.pid, "host": args.host, "port": args.port,
+    info = {"pid": proc.pid, "host": args.host, "port": args.port, "args": _passthrough(args),
             "started_at": datetime.now().isoformat(timespec="seconds")}
     PIDFILE.write_text(_json.dumps(info), encoding="utf-8")
 
@@ -4254,6 +4347,7 @@ def do_serve(args):
 
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    threading.Thread(target=_probe_loop, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -4263,6 +4357,7 @@ def do_serve(args):
 
 
 def do_push(args):
+    probe_claude_limits()
     payload = scan_local(args)
     body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
     url = args.push.rstrip("/") + "/api/ingest"
@@ -4281,6 +4376,7 @@ def do_push(args):
 
 
 def do_export(args):
+    probe_claude_limits()
     payload = scan_local(args)
     out = _Path(args.export).expanduser()
     if out.is_dir():
@@ -4399,6 +4495,8 @@ def main():
                     help="백그라운드로 띄우고 터미널을 돌려준다 (창을 닫아도 계속 돈다)")
     ap.add_argument("--stop", action="store_true", help="백그라운드 인스턴스를 종료")
     ap.add_argument("--status", action="store_true", help="백그라운드 인스턴스 상태 확인")
+    ap.add_argument("--restart", action="store_true",
+                    help="백그라운드 인스턴스를 같은 옵션으로 다시 시작 (새 빌드 적용)")
     ap.add_argument("--statusline", action="store_true", help="Claude Code 상태줄에서 한도만 기록")
     ap.add_argument("--diag", action="store_true",
                     help="데이터 규모와 스캔 시간을 출력한다 (느릴 때 원인 확인용)")
@@ -4424,6 +4522,19 @@ def main():
         do_clear_cache(args)
     elif args.stop:
         do_stop(args)
+    elif args.restart:
+        try:
+            info = _json.loads(PIDFILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = {}
+        do_stop(args)
+        if isinstance(info.get("args"), list):
+            args = ap.parse_args(info["args"])
+        elif info:                             # "args" 를 기록하기 전 빌드가 띄운 데몬
+            args.host, args.port = info.get("host", args.host), info.get("port", args.port)
+            print("  이전 데몬의 --host/--port 만 이어받습니다. --watch·--token 을 썼다면 --stop 후 직접 --daemon 하세요.")
+        args.no_browser = True
+        do_daemon(args)
     elif args.status:
         do_status(args)
     elif args.install:

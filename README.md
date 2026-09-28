@@ -44,7 +44,7 @@ Claude의 `message.usage`와 한도 거절 표시, Codex의 `token_count` 이벤
 | `tz` | 로컬 타임존 |
 | `collector` | 수집기 버전(날짜). 대시보드가 옛 수집기를 쓰는 머신을 알려 주는 데 쓴다 |
 | `hourly` | Claude의 최근 8개 로컬 날짜 시간별 토큰·메시지 수치. 데이터가 없으면 생략하며 대화 내용은 포함하지 않는다 |
-| `claude_limits` | Claude Code 상태줄이 받은 5시간·주간 사용률과 리셋 시각, 기록 시각. 계정·세션·경로 정보는 포함하지 않는다 |
+| `claude_limits` | Claude Code 사용량 조회나 상태줄이 받은 5시간·주간 사용률과 리셋 시각, 기록 시각. 계정·세션·경로 정보는 포함하지 않는다 |
 | `recent_sessions` | 프로젝트별 최근 Claude 메인 세션 최대 5개의 마지막 활동 시각·컨텍스트 크기·메시지 수. 세션 ID나 파일 정보는 포함하지 않는다 |
 | `codex` | Codex 토큰 수치, 요청 수, OpenAI가 기록한 한도 백분율·리셋 시각·플랜 라벨 |
 | `plan` | Claude 플랜·한도 등급·추가 사용 여부 등 요금제 라벨. 이메일·이름·계정/조직 ID는 절대 담지 않는다 |
@@ -69,13 +69,21 @@ python3 claude-usage.py              # 브라우저가 열린다
 python3 claude-usage.py --daemon     # 백그라운드로 (창을 닫아도 계속)
 python3 claude-usage.py --status
 python3 claude-usage.py --stop
+python3 claude-usage.py --restart    # 같은 옵션으로 다시 시작 (새 버전 적용)
 ```
 
 Windows에서는 `--daemon` 이 `pythonw.exe` 로 띄우므로 콘솔 창이 뜨지 않는다.
 
 ### Claude 실제 한도 받기
 
-터미널 Claude Code 세션의 상태줄 명령에 이 도구를 연결하면 실제 5시간·주간 사용률을
+대시보드(`--daemon` 포함)는 5분마다, `--push`·`--export` 는 실행할 때 한 번 Claude Code 에
+사용량을 물어 실제 5시간·주간 사용률을 `~/.claude-usage/claude_limits.json`에 기록한다.
+Claude Code 의 `get_usage` 제어 요청(2.1.274 이상)을 쓰므로 모델을 부르지 않고 트랜스크립트도
+남지 않는다. Windows 에서는 데스크톱 앱에 딸린 최신 `claude.exe`, 그 밖에서는 PATH 의 `claude` 를
+쓴다. 버전이 낮거나 로그인이 없으면 조용히 건너뛴다. 이 요청은 Claude Code 가 실험 기능으로
+표시한 것이라 형식이 바뀌면 받지 못할 수 있다 ― 그때는 아래 상태줄이나 추정치로 돌아간다.
+
+그 밖에 터미널 Claude Code 세션의 상태줄 명령에 이 도구를 연결하면 실제 5시간·주간 사용률을
 `~/.claude-usage/claude_limits.json`에 기록한다. `~/.claude/settings.json` 또는 프로젝트의
 `.claude/settings.json`에 다음처럼 넣는다(스크립트 경로는 절대경로로 바꾼다).
 
@@ -100,7 +108,7 @@ Windows에서는 `--daemon` 이 `pythonw.exe` 로 띄우므로 콘솔 창이 뜨
   앱 실행 별칭인 경우가 많아, 설치한 Python 대신 Store 나 설치 관리자를 부를 수 있다.
 - Windows PowerShell 5.1 에서는 `&&` 로 명령을 이을 수 없다(`&` 도 마찬가지).
   `--stop` 과 `--daemon` 을 이어 칠 때는 `;` 를 쓰거나 한 줄씩 친다. `|` 로 이으면
-  두 명령이 **동시에** 돌아서 끄는 쪽과 켜는 쪽이 엉킨다.
+  두 명령이 **동시에** 돌아서 끄는 쪽과 켜는 쪽이 엉킨다. 다시 띄우는 것이 목적이면 `--restart` 하나로 된다.
 
 ## 여러 대를 한 화면에
 
@@ -156,6 +164,7 @@ python3 claude-usage.py --daemon --watch ~/Dropbox/claude-usage
 |---|---|
 | `--daemon` | 백그라운드로 띄우고 터미널을 돌려준다 |
 | `--status` / `--stop` | 상태 확인 / 종료. `--stop` 은 기록된 인스턴스가 응답하고 python 일 때만 끄고, 아니면 기록만 지운다 |
+| `--restart` | 백그라운드 인스턴스를 끄고 그때 띄운 옵션(`--host`·`--port`·`--watch`·`--token` 등) 그대로 다시 띄운다. 이 옵션이 생기기 전에 띄운 인스턴스는 `--host`·`--port` 만 이어받는다 |
 | `--statusline` | Claude Code 상태줄 stdin에서 실제 5시간·주간 한도만 기록하고 한 줄을 출력 |
 | `--host 0.0.0.0` | 다른 머신이 `--push` 로 보낼 수 있게 연다 (기본은 로컬 전용) |
 | `--port N` | 기본 8787 |
@@ -175,7 +184,7 @@ python3 claude-usage.py --daemon --watch ~/Dropbox/claude-usage
 | `--no-browser` | 브라우저를 자동으로 열지 않는다 |
 
 상태는 `~/.claude-usage/` 아래에 둔다 — `machines/` (받은 스냅샷),
-`cache/` (증분 스캔 캐시), `claude_limits.json` (상태줄 한도), `server.log`.
+`cache/` (증분 스캔 캐시), `claude_limits.json` (Claude 실제 한도), `server.log`.
 
 ## 증분 스캔
 

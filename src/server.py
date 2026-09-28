@@ -573,13 +573,26 @@ def _statusline_print(text):
             pass
 
 
+def _write_claude_limits(limits):
+    CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CLAUDE_LIMITS_FILE.with_name(CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
+    try:
+        with tmp.open("w", encoding="utf-8") as f:
+            _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
+        tmp.replace(CLAUDE_LIMITS_FILE)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def do_statusline():
     if _sys.stdin is None or _sys.stdin.isatty():
         # 손으로 실행하면 stdin 입력을 기다리며 멈춘 것처럼 보인다. 상태줄 연결용이라고만 알린다.
         _statusline_print("Claude Code 상태줄(statusLine)에 연결해 쓰는 명령입니다")
         return
     text = "Claude 한도 -"
-    tmp = None
     try:
         incoming = _json.load(_sys.stdin)
         raw = incoming.get("rate_limits") if isinstance(incoming, dict) else None
@@ -590,12 +603,7 @@ def do_statusline():
                     value[name] = raw[name]
         limits = normalize_claude_limits(value)
         if limits:
-            CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            tmp = CLAUDE_LIMITS_FILE.with_name(
-                CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
-            with tmp.open("w", encoding="utf-8") as f:
-                _json.dump(limits, f, ensure_ascii=False, separators=(",", ":"))
-            tmp.replace(CLAUDE_LIMITS_FILE)
+            _write_claude_limits(limits)
             parts = []
             for name, label in (("five_hour", "5시간"), ("seven_day", "주간")):
                 if name in limits:
@@ -604,13 +612,89 @@ def do_statusline():
             text = "Claude " + " · ".join(parts)
     except Exception:
         pass
-    finally:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
     _statusline_print(text)
+
+
+CLAUDE_PROBE_INTERVAL = 300.0   # 초. 사용량 조회를 너무 자주 부르면 429 가 난다(다른 도구들 사례)
+
+
+def _claude_exe():
+    """데스크톱 앱에 딸린 최신 Claude Code. get_usage 제어 요청은 2.1.274 부터 받는다."""
+    def version(p):
+        try:
+            return tuple(int(x) for x in p.parent.name.split("."))
+        except ValueError:
+            return ()
+    appdata = os.environ.get("APPDATA")
+    found = sorted(_Path(appdata).glob("Claude/claude-code/*/claude.exe"), key=version) if appdata else []
+    return str(found[-1]) if found else shutil.which("claude")
+
+
+def usage_to_limits(rate_limits):
+    """get_usage 응답의 rate_limits(utilization 0~100, resets_at ISO) → 상태줄과 같은 형식."""
+    value = {"recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    for name in ("five_hour", "seven_day"):
+        w = rate_limits.get(name) if isinstance(rate_limits, dict) else None
+        reset = parse_ts(w.get("resets_at")) if isinstance(w, dict) else None
+        if reset is not None:
+            value[name] = {"used_percentage": w.get("utilization"), "resets_at": reset.timestamp()}
+    return normalize_claude_limits(value)
+
+
+def probe_claude_limits():
+    """Claude Code 에 get_usage 제어 요청을 보내 실제 한도 %를 받아 기록한다.
+    모델을 부르지 않고 트랜스크립트도 남지 않는다(2026-09-28 실측). 실험 API 라 실패하면 조용히 None."""
+    exe = _claude_exe()
+    if not exe:
+        return None
+    STORE.mkdir(parents=True, exist_ok=True)
+    req = {"type": "control_request", "request_id": "usage",
+           "request": {"subtype": "get_usage", "skip_behaviors": True}}
+    try:
+        # --setting-sources "" : 사용자 훅(SessionStart 등)을 5분마다 돌리지 않는다
+        p = subprocess.Popen([exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                              "--verbose", "--setting-sources", ""],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             cwd=str(STORE), creationflags=0x08000000 if os.name == "nt" else 0)  # NO_WINDOW
+    except OSError:
+        return None
+    timer = threading.Timer(30, p.kill)       # 응답이 안 오면 stdout 읽기가 영영 안 끝난다
+    timer.start()
+    rate_limits = None
+    try:
+        p.stdin.write((_json.dumps(req) + "\n").encode("utf-8"))
+        p.stdin.flush()
+        for line in p.stdout:
+            try:
+                rec = _json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("type") == "control_response":
+                resp = (rec.get("response") or {}).get("response")
+                rate_limits = resp.get("rate_limits") if isinstance(resp, dict) else None
+                break
+    except (OSError, ValueError):
+        pass
+    finally:
+        timer.cancel()
+        try:
+            p.kill()
+        except OSError:
+            pass
+        p.wait()
+    limits = usage_to_limits(rate_limits)
+    if limits:
+        _write_claude_limits(limits)
+    return limits
+
+
+def _probe_loop():
+    while True:
+        try:
+            probe_claude_limits()
+        except Exception as e:                 # 조회가 죽어도 서버는 살아 있어야 한다
+            print(f"  ! Claude 한도 조회 실패: {e}", file=sys.stderr)
+        time.sleep(CLAUDE_PROBE_INTERVAL)
 
 
 def scan_local(args):
@@ -950,7 +1034,7 @@ def do_daemon(args):
             f"\n  20초 안에 응답이 없어 포기했습니다. 로그를 확인하세요:\n  {LOGFILE}\n"
         )
 
-    info = {"pid": proc.pid, "host": args.host, "port": args.port,
+    info = {"pid": proc.pid, "host": args.host, "port": args.port, "args": _passthrough(args),
             "started_at": datetime.now().isoformat(timespec="seconds")}
     PIDFILE.write_text(_json.dumps(info), encoding="utf-8")
 
@@ -1158,6 +1242,7 @@ def do_serve(args):
 
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    threading.Thread(target=_probe_loop, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -1167,6 +1252,7 @@ def do_serve(args):
 
 
 def do_push(args):
+    probe_claude_limits()
     payload = scan_local(args)
     body = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
     url = args.push.rstrip("/") + "/api/ingest"
@@ -1185,6 +1271,7 @@ def do_push(args):
 
 
 def do_export(args):
+    probe_claude_limits()
     payload = scan_local(args)
     out = _Path(args.export).expanduser()
     if out.is_dir():
@@ -1303,6 +1390,8 @@ def main():
                     help="백그라운드로 띄우고 터미널을 돌려준다 (창을 닫아도 계속 돈다)")
     ap.add_argument("--stop", action="store_true", help="백그라운드 인스턴스를 종료")
     ap.add_argument("--status", action="store_true", help="백그라운드 인스턴스 상태 확인")
+    ap.add_argument("--restart", action="store_true",
+                    help="백그라운드 인스턴스를 같은 옵션으로 다시 시작 (새 빌드 적용)")
     ap.add_argument("--statusline", action="store_true", help="Claude Code 상태줄에서 한도만 기록")
     ap.add_argument("--diag", action="store_true",
                     help="데이터 규모와 스캔 시간을 출력한다 (느릴 때 원인 확인용)")
@@ -1328,6 +1417,19 @@ def main():
         do_clear_cache(args)
     elif args.stop:
         do_stop(args)
+    elif args.restart:
+        try:
+            info = _json.loads(PIDFILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            info = {}
+        do_stop(args)
+        if isinstance(info.get("args"), list):
+            args = ap.parse_args(info["args"])
+        elif info:                             # "args" 를 기록하기 전 빌드가 띄운 데몬
+            args.host, args.port = info.get("host", args.host), info.get("port", args.port)
+            print("  이전 데몬의 --host/--port 만 이어받습니다. --watch·--token 을 썼다면 --stop 후 직접 --daemon 하세요.")
+        args.no_browser = True
+        do_daemon(args)
     elif args.status:
         do_status(args)
     elif args.install:

@@ -95,6 +95,13 @@ def statusline_check():
     # 하네스가 import 전에 HOME 을 TEST_HOME 으로 바꿔 두어, 쓰는 쪽·읽는 쪽이 함께 보는 경로가 TEST_HOME 아래다.
     path = server.CLAUDE_LIMITS_FILE
     assert str(path).startswith(TEST_HOME), path
+    # get_usage 응답(utilization 0~100, resets_at ISO) → 상태줄 형식(used_percentage, epoch 초)
+    got = server.usage_to_limits({"five_hour": {"utilization": 24, "resets_at": "2026-09-28T05:09:59.700584+00:00"},
+                                  "seven_day": {"utilization": 4, "resets_at": "2026-10-02T06:00:00Z"},
+                                  "seven_day_opus": None})
+    assert got["five_hour"] == {"used_percentage": 24, "resets_at": 1790572199.700584}, got
+    assert got["seven_day"] == {"used_percentage": 4, "resets_at": 1790920800.0}, got
+    assert server.usage_to_limits(None) is None and server.usage_to_limits({"five_hour": None}) is None
     try:
         return _statusline_cases(server, path)
     finally:
