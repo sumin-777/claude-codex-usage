@@ -1923,7 +1923,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       box.hidden = !value;                     // 리셋이 지난 창은 latestClaudeLimits 가 이미 버렸다
       if (!value) return;
       box.className = "limit-meter " + limitLevel(value.pct);
-      document.getElementById("claude" + key + "Text").textContent = "Claude " + label + " 실제 " + Math.round(value.pct) +
+      document.getElementById("claude" + key + "Text").textContent = "Claude " + label + " " + Math.round(value.pct) +
         "% · 리셋 " + localTime(value.resets_at) + " · " + relativeTime(value.recorded_at, now.getTime()) + " · " + value.machine;
       document.getElementById("claude" + key + "Fill").style.width = Math.max(0, Math.min(100, value.pct)) + "%";
     };
