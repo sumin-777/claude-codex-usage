@@ -366,7 +366,10 @@ def _load_payload_cache(fp, args):
             d.get("cache_v") != CACHE_VERSION or d.get("payload_v") != PAYLOAD_CACHE_VERSION):
         return None
     pl = d.get("payload")
-    if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
+    # 수집기를 올렸는데 기록이 그대로면 옛 버전 결과가 재사용돼 "옛 수집기"로 계속 뜬다 (2026-09-28)
+    if not pl or pl.get("collector") != COLLECTOR_VERSION:
+        return None
+    if pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
         return None
     return pl
 

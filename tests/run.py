@@ -309,6 +309,12 @@ def fixture():
         with (beta / "main.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record(stamp(0, 16, 0), "beta-main", "msg-mid", "req-mid", extra)) + "\n")
         return {}
+    fp = ["payload-cache-probe"]               # 수집기 버전이 바뀌면 payload 캐시를 버린다
+    server._save_payload_cache(fp, grown, args)
+    assert server._load_payload_cache(fp, args) == grown
+    stale = dict(grown, collector="2000-01-01")
+    server._save_payload_cache(fp, stale, args)
+    assert server._load_payload_cache(fp, args) is None, "old-collector payload cache must not be reused"
     server.scan_local = appending_scan
     server._do_scan(args)
     assert server._scan["fp"] != server._fingerprint(projects), "mid-scan append must trigger a rescan"

@@ -2980,10 +2980,21 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   var fi = document.getElementById("fileInput");
   fi.onchange = function () { readFiles(fi.files); fi.value = ""; };
-  document.getElementById("btnAdd").onclick = function () { fi.click(); };
+  // 브라우저는 시작 폴더를 경로로 지정할 수 없다. id 를 주면 마지막으로 고른 폴더에서 다시 열린다.
+  // showOpenFilePicker 가 없거나(Firefox·Safari) 보안 컨텍스트가 아니면(LAN IP 로 접속) 기존 입력창으로 간다.
+  function pickFiles() {
+    if (!window.showOpenFilePicker) { fi.click(); return; }
+    window.showOpenFilePicker({
+      id: "claude-usage-json", multiple: true,
+      types: [{ description: "수집 JSON", accept: { "application/json": [".json"] } }]
+    }).then(function (hs) {
+      return Promise.all(hs.map(function (h) { return h.getFile(); }));
+    }).then(readFiles, function (e) { if (e && e.name !== "AbortError") fi.click(); });
+  }
+  document.getElementById("btnAdd").onclick = pickFiles;
   var drop = document.getElementById("drop");
-  drop.onclick = function () { fi.click(); };
-  drop.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fi.click(); } };
+  drop.onclick = pickFiles;
+  drop.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pickFiles(); } };
   ["dragenter", "dragover"].forEach(function (t) {
     drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("over"); });
   });
@@ -3451,7 +3462,10 @@ def _load_payload_cache(fp, args):
             d.get("cache_v") != CACHE_VERSION or d.get("payload_v") != PAYLOAD_CACHE_VERSION):
         return None
     pl = d.get("payload")
-    if not pl or pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
+    # 수집기를 올렸는데 기록이 그대로면 옛 버전 결과가 재사용돼 "옛 수집기"로 계속 뜬다 (2026-09-28)
+    if not pl or pl.get("collector") != COLLECTOR_VERSION:
+        return None
+    if pl.get("machine", {}).get("label") != machine_identity(args.machine)["label"]:
         return None
     return pl
 
