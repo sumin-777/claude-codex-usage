@@ -107,6 +107,8 @@ header { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 18px 26px; 
 h1 { font-size: 19px; font-weight: 600; letter-spacing: -.01em; margin: 0 0 2px; }
 .sub { color: var(--ink-mute); font-size: 12.5px; margin: 0; }
 .head-meta { margin-left: auto; text-align: right; }
+.gh-link { display: inline-block; margin-bottom: 6px; color: var(--ink-mute); text-decoration: none; }
+.gh-link:hover, .gh-link:focus-visible { color: var(--ink); text-decoration: underline; }
 
 /* meter reading */
 .meter { display: flex; align-items: baseline; gap: 10px; margin-top: 4px; }
@@ -235,9 +237,6 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
 .limit-meter .mini { height:8px; margin-top:4px; }
-.claude-week-controls { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:8px 0 14px; color:var(--ink-mute); font-size:12px; }
-.claude-week-controls input, .claude-week-controls select { font:11.5px var(--mono); color:var(--ink); background:var(--panel); border:1px solid var(--rule); border-radius:6px; padding:5px 7px; }
-.claude-week-controls input { width:58px; }
 details.fold > summary { cursor:pointer; font-size:12px; color:var(--ink-mute); margin:10px 0 6px; }
 
 /* ---------- heatmap ---------- */
@@ -272,6 +271,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <p class="sub">여러 PC·서버의 Claude Code·Codex 사용량을 하나의 계량기로</p>
     </div>
     <div class="head-meta">
+      <a class="lbl gh-link" href="https://github.com/sumin-777/claude-codex-usage" target="_blank" rel="noopener">GitHub ↗</a>
       <div class="lbl">누적 검침값</div>
       <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">토큰</span></div>
       <div class="lbl" id="meterRange" style="margin-top:4px">—</div>
@@ -306,24 +306,16 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <div id="claudeFiveText"></div>
       <div class="mini"><i id="claudeFiveFill"></i></div>
     </div>
-    <div class="limit-meter" id="claudeWeeklyMeter">
+    <div class="limit-meter" id="claudeWeeklyMeter" hidden>
       <div id="claudeWeeklyText"></div>
       <div class="mini"><i id="claudeWeeklyFill"></i></div>
-    </div>
-    <div class="claude-week-controls">
-      <label for="claudeWeeklyPct">앱 %</label>
-      <input id="claudeWeeklyPct" type="number" min="0" max="100" step="1" inputmode="numeric">
-      <button class="btn" id="claudeWeeklySave" type="button">저장</button>
-      <select id="claudeResetDow" aria-label="Claude 주간 리셋 요일"></select>
-      <select id="claudeResetHour" aria-label="Claude 주간 리셋 시각"></select>
-      <button class="btn" id="claudeWeeklyClear" type="button">보정 지우기</button>
     </div>
     <div id="codexLimits"></div>
     <details class="fold">
       <summary>토큰 표</summary>
       <div class="tbl-scroll"><table class="ledger" id="codexTable"></table></div>
     </details>
-    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude "실제"는 Claude Code에 물어 받은 값이고, 없으면 Claude 주간은 로컬 기록을 요금 비율로 가중해 앱에서 본 %에 맞춘 추정치입니다. 다른 기기·claude.ai 사용과 모델별 차이는 반영되지 않습니다. 한도가 바뀌면 보정을 지우고 다시 입력하세요.</p>
+    <p class="hint">Codex 백분율은 Codex가 로컬 로그에 남긴 값입니다. Claude 백분율은 대시보드가 Claude Code(2.1.274 이상)에 5분마다 물어 받은 계정 한도이고, 없으면 터미널 상태줄이 기록한 값입니다.</p>
   </section>
 
   <section>
@@ -450,35 +442,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   var state = { machines: {}, off: {}, range: "all", sample: true, db: null,
                dirty: {}, scanning: false, scanElapsed: 0 };
-  var CLAUDE_WEEKLY_KEY = "cu.claudeWeekly";
-  var claudeWeekly = {resetDow:4, resetHour:15, calibrations:[]};
-
-  function loadClaudeWeekly() {
-    try {
-      var saved = JSON.parse(localStorage.getItem(CLAUDE_WEEKLY_KEY) || "null");
-      if (!saved || typeof saved !== "object") return;
-      var dow = Number(saved.resetDow), hour = Number(saved.resetHour);
-      if (dow >= 0 && dow <= 6 && Math.floor(dow) === dow) claudeWeekly.resetDow = dow;
-      if (hour >= 0 && hour <= 23 && Math.floor(hour) === hour) claudeWeekly.resetHour = hour;
-      if (Array.isArray(saved.calibrations)) {
-        claudeWeekly.calibrations = saved.calibrations.filter(function (cal) {
-          var at = Number(cal && cal.at), pct = Number(cal && cal.pct);
-          return at > 0 && isFinite(at) && pct >= 0 && pct <= 100 && Math.floor(pct) === pct;
-        }).map(function (cal) {
-          var out = {at:Number(cal.at), pct:Number(cal.pct)}, k = Number(cal.k);
-          if (isFinite(k) && k > 0) out.k = k;
-          return out;
-        });
-      }
-    } catch (e) {}
-  }
-
-  function saveClaudeWeeklySettings() {
-    try { localStorage.setItem(CLAUDE_WEEKLY_KEY, JSON.stringify(claudeWeekly)); }
-    catch (e) {}
-  }
-
-  loadClaudeWeekly();
 
   // ------------------------------------------------------------ formatting
   // 한국어 단위(천·만·억·조). 값 이하의 가장 큰 단위로 쓰고, 그 단위에서 반올림한 값이
@@ -949,68 +912,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
   }
 
-  function two(n) { return ("0" + n).slice(-2); }
-
   function localDayKey(d) {
     return dayKey(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
-  }
-
-  function hourKey(d) { return localDayKey(d) + "T" + two(d.getHours()); }
-
-  function claudeWindowStart(now, resetDow, resetHour) {
-    var day = localDayKey(now);
-    var delta = (weekdayOf(day) - resetDow + 7) % 7;
-    if (delta === 0 && now.getHours() < resetHour) delta = 7;
-    return dayAdd(day, -delta) + "T" + two(resetHour);
-  }
-
-  // 상대 가격 비율이며 모델 가중치는 무시한다. 절대 척도는 보정값에서 온다.
-  function claudeBucketUnits(b) {
-    b = b || {};
-    var cw = Number(b.cw) || 0, cw1 = Number(b.cw1) || 0, cw5 = Number(b.cw5) || 0;
-    return (Number(b.i) || 0) + (Number(b.o) || 0) * 5 + cw5 * 1.25 + cw1 * 2 +
-      Math.max(0, cw - cw1 - cw5) * 1.25 + (Number(b.cr) || 0) * 0.1;
-  }
-
-  function claudeUnits(startKey, endKey) {
-    var total = 0;
-    Object.keys(state.machines).forEach(function (id) {
-      var hourly = state.machines[id].hourly;
-      if (!hourly || typeof hourly !== "object") return;
-      Object.keys(hourly).forEach(function (key) {
-        if (key >= startKey && key <= endKey) total += claudeBucketUnits(hourly[key]);
-      });
-    });
-    return total;
-  }
-
-  function median(values) {
-    var xs = values.slice().sort(function (a, b) { return a - b; });
-    var middle = Math.floor(xs.length / 2);
-    return xs.length % 2 ? xs[middle] : (xs[middle - 1] + xs[middle]) / 2;
-  }
-
-  // 한 시간 버킷의 사용량(모든 머신 합).
-  function claudeHourUnits(key) {
-    var total = 0;
-    Object.keys(state.machines).forEach(function (id) {
-      var hourly = state.machines[id].hourly;
-      if (hourly && typeof hourly === "object" && hourly[key]) total += claudeBucketUnits(hourly[key]);
-    });
-    return total;
-  }
-
-  // date 시각까지의 사용량. date 가 속한 시간의 버킷은 그 안에서 date 앞부분 비율만큼만 센다 ―
-  // 전부 세면 기준점 뒤 같은 시간 안에 쓴 양이 추정에서 영영 빠진다. 버킷이 담은 구간은 지난 시간이면 한 시간 전체,
-  // 지금 진행 중인 시간이면 정각부터 now 까지다(한 시간으로 나누면 방금 받은 실제값 위에 그 시간 사용량이 부풀어 더해진다).
-  // 키 문자열로 날짜 산술을 하지 않으려고 뺄셈을 쓴다.
-  function claudeUnitsAt(startKey, date, now) {
-    var key = hourKey(date);
-    if (key < startKey) return 0;
-    var minute = function (d) { return d.getMinutes() + d.getSeconds() / 60; };
-    var span = now && key === hourKey(now) ? minute(now) : 60;
-    var before = span > 0 ? Math.min(1, minute(date) / span) : 1;
-    return claudeUnits(startKey, key) - claudeHourUnits(key) * (1 - before);
   }
 
   // 상태줄이 받은 실제값. 주간·5시간을 따로 고른다 ― 리셋이 지난 창은 버린다.
@@ -1034,98 +937,18 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return best.weekly || best.fiveHour ? best : null;
   }
 
-  // keepK: 스캔 중이라 시간별 기록이 덜 들어왔을 수 있으면 재계산한 k 를 보정 기록에 쓰지 않는다.
-  function estimateClaudeWeekly(now, settings, live, keepK) {
-    var start = claudeWindowStart(now, settings.resetDow, settings.resetHour);
-    var current = hourKey(now), slopes = [], changed = false, anchor = null, latestManualAt = -Infinity;
-    (settings.calibrations || []).filter(function (cal) {
-      var at = Number(cal && cal.at);
-      return isFinite(at) && !isNaN(new Date(at).getTime()) && at <= now.getTime();
-    }).sort(function (a, b) { return Number(a.at) - Number(b.at); }).forEach(function (cal) {
-      var at = new Date(Number(cal.at)), pct = Number(cal.pct), calStart = claudeWindowStart(at, settings.resetDow, settings.resetHour);
-      latestManualAt = Number(cal.at);
-      if (calStart === start) anchor = cal;
-      if (pct <= 0) return;
-      // 이번 창만 다시 계산한다. 지난 창은 머신마다 시간별 기록이 남은 날이 달라 모자라게 셀 수 있어 저장값을 쓴다.
-      var units = calStart === start ? claudeUnitsAt(start, at, now) : 0, k = Number(cal.k);
-      if (units > 0) {
-        k = units / pct;
-        if (!keepK && (!isFinite(Number(cal.k)) || Math.abs(Number(cal.k) - k) > 1e-9)) { cal.k = k; changed = true; }
-      } else if (!isFinite(k) || k <= 0) return;
-      slopes.push({cal:cal, k:k});
-    });
-    // 실제값은 수동 보정보다 새롭고 이 창 안에서 기록됐을 때만 기준점이 된다. 창 시작 전 값을 쓰면
-    // baseUnits 가 0 이 되어 창 전체 사용량이 실제값 위에 한 번 더 더해진다(설정한 리셋 시각이 실제와 어긋날 때).
-    var lw = live && live.weekly;
-    if (lw && lw.at > latestManualAt && hourKey(new Date(lw.at)) >= start) {
-      anchor = {at:lw.at, pct:lw.pct, live:true, machine:lw.machine};
-    }
-    // 주간 안에서도 비율이 약 20% 흔들려 최근 보정값만 쓴다.
-    slopes = slopes.slice(-5);
-    var ks = slopes.map(function (item) { return item.k; }), used = claudeUnits(start, current);
-    var k = ks.length ? median(ks) : null, kMin = ks.length ? Math.min.apply(null, ks) : null, kMax = ks.length ? Math.max.apply(null, ks) : null;
-    var base = anchor ? Number(anchor.pct) : 0, baseUnits = anchor ? claudeUnitsAt(start, new Date(anchor.at), now) : 0;
-    var inc = Math.max(0, used - baseUnits);
-    return {
-      startKey: start,
-      endKey: current,
-      nextResetKey: dayAdd(start.slice(0, 10), 7) + "T" + two(settings.resetHour),
-      units: used,
-      estimate: k == null ? null : base + inc / k,
-      low: k == null ? null : base + inc / kMax,
-      high: k == null ? null : base + inc / kMin,
-      anchor: anchor,
-      calibrations: slopes.map(function (item) { return item.cal; }),
-      changed: changed
+  function renderClaudeLimits() {
+    var now = new Date(), live = latestClaudeLimits(now), lw = live && live.weekly, l5 = live && live.fiveHour;
+    var meter = function (key, label, value) {
+      var box = document.getElementById("claude" + key + "Meter");
+      box.hidden = !value;                     // 리셋이 지난 창은 latestClaudeLimits 가 이미 버렸다
+      if (!value) return;
+      document.getElementById("claude" + key + "Text").textContent = "Claude " + label + " 실제 " + Math.round(value.pct) +
+        "% · 리셋 " + localTime(value.resets_at) + " · " + relativeTime(value.recorded_at, now.getTime()) + " · " + value.machine;
+      document.getElementById("claude" + key + "Fill").style.width = Math.max(0, Math.min(100, value.pct)) + "%";
     };
-  }
-
-  function renderClaudeWeekly() {
-    var text = document.getElementById("claudeWeeklyText"), fill = document.getElementById("claudeWeeklyFill");
-    var now = new Date(), live = latestClaudeLimits(now), result;
-    try { result = estimateClaudeWeekly(now, claudeWeekly, live, state.scanning); }
-    catch (e) { result = {estimate:null, nextResetKey:claudeWindowStart(now, 4, 15), anchor:null, calibrations:[]}; }
-    if (result.changed) saveClaudeWeeklySettings();
-    var reset = localTime(new Date(result.nextResetKey + ":00:00"));
-    var hasEstimate = result.estimate != null && isFinite(result.estimate) && isFinite(result.low) && isFinite(result.high);
-    var shown = hasEstimate ? Math.min(100, Math.round(result.estimate)) : null;   // 튀는 비율 하나가 수백 %를 만들 수 있다
-    var bar = function (pct) { fill.style.width = Math.max(0, Math.min(100, pct)) + "%"; };
-    var lw = live && live.weekly, l5 = live && live.fiveHour;
-    var fiveMeter = document.getElementById("claudeFiveMeter");
-    fiveMeter.hidden = !l5;                    // 리셋이 지난 5시간 창은 latestClaudeLimits 가 이미 버렸다
-    if (l5) {
-      document.getElementById("claudeFiveText").textContent = "Claude 5시간 실제 " + Math.round(l5.pct) + "% · 리셋 " +
-        localTime(l5.resets_at) + " · " + relativeTime(l5.recorded_at, now.getTime()) + " · " + l5.machine;
-      document.getElementById("claudeFiveFill").style.width = Math.max(0, Math.min(100, l5.pct)) + "%";
-    }
-    if (lw) {
-      text.textContent = "Claude 주간 실제 " + Math.round(lw.pct) + "% · " +
-        relativeTime(lw.recorded_at, now.getTime()) + " · " + lw.machine +
-        " · 리셋 " + localTime(lw.resets_at);
-      if (hasEstimate) {
-        text.textContent += " · 추정 ≈" + shown + "% · 기준 " +
-          (result.anchor && result.anchor.live ? "실제값" :
-            (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%")) +
-          " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회";
-      }
-      // 실제값이 기준이어도 그 뒤 사용량(또는 더 새 수동 보정)이 반영된 추정이 지금에 더 가깝다.
-      bar(hasEstimate ? result.estimate : lw.pct);
-    } else if (hasEstimate) {
-      var lo = Math.min(100, Math.round(result.low)), hi = Math.min(100, Math.round(result.high));
-      text.textContent = "Claude 주간 ≈" + shown + "%" +
-        (lo !== hi ? " (" + lo + "~" + hi + "%)" : "") +
-        " · 리셋 " + reset + " · 기준 " + (result.anchor ? localTime(new Date(result.anchor.at)) + " " + result.anchor.pct + "%" : "리셋 시점 0%") +
-        " + 이후 사용 · 비율 보정 " + result.calibrations.length + "회 · 로컬 기록 추정";
-      bar(result.estimate);
-    } else {
-      text.textContent = "Claude 주간 — 앱 사용량 화면의 '이번 주' %를 입력하면 추정합니다 · 리셋 " + reset;
-      bar(0);
-    }
-    var missing = Object.keys(state.machines).filter(function (id) {
-      var H = state.machines[id].hourly;
-      return !H || typeof H !== "object" || !Object.keys(H).length;
-    }).map(function (id) { return state.machines[id].machine.label; });
-    if (missing.length) text.textContent += " · 시간별 기록 없음: " + missing.join(", ") + " (추정에서 빠짐)";
+    meter("Five", "5시간", l5);
+    meter("Weekly", "주간", lw);
   }
 
   function renderCodex(D) {
@@ -1148,14 +971,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       var C = state.machines[id].codex;
       return C && (Object.keys(C.daily || {}).length || C.limits);
     });
-    var hasHourly = loaded.some(function (id) {
-      var H = state.machines[id].hourly;
-      return H && typeof H === "object" && Object.keys(H).length;
-    });
-    var has = hasCodex || hasHourly;
+    var has = hasCodex || !!latestClaudeLimits(new Date());
     section.hidden = !has;
     if (!has) return;
-    renderClaudeWeekly();
+    renderClaudeLimits();
     var limits = document.getElementById("codexLimits"); limits.textContent = "";
     if (newest) {
       (newest.windows || []).forEach(function (w) {
@@ -1973,45 +1792,6 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       render();
     };
   });
-
-  var claudePct = document.getElementById("claudeWeeklyPct");
-  var claudeDow = document.getElementById("claudeResetDow");
-  var claudeHour = document.getElementById("claudeResetHour");
-  WD.forEach(function (name, i) {
-    var option = el("option", null, name); option.value = String(i); claudeDow.appendChild(option);
-  });
-  for (var resetHour = 0; resetHour < 24; resetHour++) {
-    var hourOption = el("option", null, two(resetHour) + ":00");
-    hourOption.value = String(resetHour); claudeHour.appendChild(hourOption);
-  }
-  claudeDow.value = String(claudeWeekly.resetDow);
-  claudeHour.value = String(claudeWeekly.resetHour);
-  function saveClaudeReset() {
-    claudeWeekly.resetDow = Number(claudeDow.value);
-    claudeWeekly.resetHour = Number(claudeHour.value);
-    saveClaudeWeeklySettings();
-    render();
-  }
-  function saveClaudeCalibration() {
-    if (!claudePct.value.trim()) return;
-    var value = Number(claudePct.value);
-    if (!isFinite(value) || value < 0 || value > 100 || Math.floor(value) !== value) return;
-    claudeWeekly.resetDow = Number(claudeDow.value);
-    claudeWeekly.resetHour = Number(claudeHour.value);
-    claudeWeekly.calibrations.push({at:Date.now(), pct:value});
-    saveClaudeWeeklySettings();
-    render();
-  }
-  claudeDow.onchange = saveClaudeReset;
-  claudeHour.onchange = saveClaudeReset;
-  document.getElementById("claudeWeeklySave").onclick = saveClaudeCalibration;
-  claudePct.onkeydown = function (e) { if (e.key === "Enter") saveClaudeCalibration(); };
-  document.getElementById("claudeWeeklyClear").onclick = function () {
-    if (!confirm("Claude 주간 보정을 모두 지울까요?")) return;
-    claudeWeekly.calibrations = [];
-    saveClaudeWeeklySettings();
-    render();
-  };
 
   var fi = document.getElementById("fileInput");
   fi.onchange = function () { readFiles(fi.files); fi.value = ""; };

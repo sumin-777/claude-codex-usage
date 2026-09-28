@@ -81,7 +81,7 @@ Windows에서는 `--daemon` 이 `pythonw.exe` 로 띄우므로 콘솔 창이 뜨
 Claude Code 의 `get_usage` 제어 요청(2.1.274 이상)을 쓰므로 모델을 부르지 않고 트랜스크립트도
 남지 않는다. Windows 에서는 데스크톱 앱에 딸린 최신 `claude.exe`, 그 밖에서는 PATH 의 `claude` 를
 쓴다. 버전이 낮거나 로그인이 없으면 조용히 건너뛴다. 이 요청은 Claude Code 가 실험 기능으로
-표시한 것이라 형식이 바뀌면 받지 못할 수 있다 ― 그때는 아래 상태줄이나 추정치로 돌아간다.
+표시한 것이라 형식이 바뀌면 받지 못할 수 있다 ― 그때는 아래 상태줄 값만 쓰고, 그것도 없으면 Claude 한도 미터는 뜨지 않는다.
 
 그 밖에 터미널 Claude Code 세션의 상태줄 명령에 이 도구를 연결하면 실제 5시간·주간 사용률을
 `~/.claude-usage/claude_limits.json`에 기록한다. `~/.claude/settings.json` 또는 프로젝트의
