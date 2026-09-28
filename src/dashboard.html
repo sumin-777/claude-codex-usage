@@ -977,7 +977,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       var C = state.machines[id].codex;
       return C && (Object.keys(C.daily || {}).length || C.limits);
     });
-    var has = hasCodex || !!latestClaudeLimits(new Date());
+    // Claude 기록만 있어도 섹션(아래 토큰 표)은 보인다. 한도 미터는 값이 있을 때만 renderClaudeLimits 가 켠다.
+    var has = hasCodex || D.msgs > 0 || !!latestClaudeLimits(new Date());
     section.hidden = !has;
     if (!has) return;
     renderClaudeLimits();

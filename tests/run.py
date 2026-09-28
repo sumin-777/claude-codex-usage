@@ -102,11 +102,44 @@ def statusline_check():
     assert got["five_hour"] == {"used_percentage": 24, "resets_at": 1790572199.700584}, got
     assert got["seven_day"] == {"used_percentage": 4, "resets_at": 1790920800.0}, got
     assert server.usage_to_limits(None) is None and server.usage_to_limits({"five_hour": None}) is None
+    _probe_cases(server, path)
     try:
         return _statusline_cases(server, path)
     finally:
         if path.exists():
             path.unlink()
+
+
+FAKE_CLAUDE = r'''
+import json, os, sys, time
+req = json.loads(sys.stdin.readline())
+if sys.argv[1] == "hang":
+    time.sleep(20)
+def window(pct):
+    return {"utilization": pct, "resets_at": "2099-01-01T00:00:00Z"}
+def reply(rid, pct):
+    body = {"rate_limits": {"five_hour": window(pct), "seven_day": window(pct)}}
+    print(json.dumps({"type": "control_response", "response": {"subtype": "success", "request_id": rid, "response": body}}))
+print("not json")
+print(json.dumps({"type": "system", "subtype": "init"}))
+reply("someone-else", 77)                     # 다른 요청의 응답은 건너뛰어야 한다
+reply(req["request_id"], 30 if os.environ.get("DISABLE_TELEMETRY") == "1" else 99)
+sys.stdout.flush()
+'''
+
+
+def _probe_cases(server, path):
+    fake = Path(tempfile.mkdtemp(prefix="probe-", dir=TEST_HOME)) / "fake_claude.py"
+    fake.write_text(FAKE_CLAUDE, encoding="utf-8")
+    got = server.probe_claude_limits([sys.executable, str(fake), "ok"])
+    assert got and got["five_hour"]["used_percentage"] == 30, got      # 77 이면 request_id 무시, 99 면 env 누락
+    assert json.loads(path.read_text(encoding="utf-8"))["seven_day"]["used_percentage"] == 30
+    path.unlink()
+    t0 = datetime.now()
+    assert server.probe_claude_limits([sys.executable, str(fake), "hang"], timeout=1) is None
+    assert (datetime.now() - t0).total_seconds() < 10, "timeout must kill a silent process"
+    assert not path.exists()
+    assert server.probe_claude_limits([str(fake.parent / "missing-exe")]) is None
 
 
 class _TtyStdin(io.StringIO):

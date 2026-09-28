@@ -641,47 +641,62 @@ def usage_to_limits(rate_limits):
     return normalize_claude_limits(value)
 
 
-def probe_claude_limits():
+PROBE_REQUEST_ID = "claude-usage-probe"
+
+
+def probe_claude_limits(cmd=None, timeout=30):
     """Claude Code 에 get_usage 제어 요청을 보내 실제 한도 %를 받아 기록한다.
-    모델을 부르지 않고 트랜스크립트도 남지 않는다(2026-09-28 실측). 실험 API 라 실패하면 조용히 None."""
-    exe = _claude_exe()
-    if not exe:
-        return None
+    모델을 부르지 않고 트랜스크립트도 남지 않는다(2026-09-28 실측). 실험 API 라 실패하면 조용히 None.
+    cmd 는 테스트가 가짜 실행 파일을 넣는 자리다."""
+    if cmd is None:
+        exe = _claude_exe()
+        if not exe:
+            return None
+        cmd = [exe]
     STORE.mkdir(parents=True, exist_ok=True)
-    req = {"type": "control_request", "request_id": "usage",
+    req = {"type": "control_request", "request_id": PROBE_REQUEST_ID,
            "request": {"subtype": "get_usage", "skip_behaviors": True}}
-    try:
-        # --setting-sources "" : 사용자 훅(SessionStart 등)을 5분마다 돌리지 않는다
-        p = subprocess.Popen([exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
-                              "--verbose", "--setting-sources", ""],
-                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                             cwd=str(STORE), creationflags=0x08000000 if os.name == "nt" else 0)  # NO_WINDOW
-    except OSError:
-        return None
-    timer = threading.Timer(30, p.kill)       # 응답이 안 오면 stdout 읽기가 영영 안 끝난다
-    timer.start()
+    # DISABLE_TELEMETRY: 안 주면 실행마다 ~/.claude.json 의 기능 플래그 캐시를 다시 써서, 5분마다
+    # 앱의 Claude Code 와 같은 파일을 두고 쓰기가 겹친다(2026-09-28 실측). CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 은
+    # 사용량 조회까지 막아 못 쓴다.
+    env = dict(os.environ, DISABLE_TELEMETRY="1")
     rate_limits = None
     try:
-        p.stdin.write((_json.dumps(req) + "\n").encode("utf-8"))
-        p.stdin.flush()
-        for line in p.stdout:
+        # disableAllHooks: 사용자 훅(SessionStart 등)을 5분마다 돌리지 않는다. --setting-sources "" 로 끄면
+        # settings.json 의 env(프록시 등)까지 빠져 그런 머신에서는 조회가 안 된다.
+        with subprocess.Popen(cmd + ["-p", "--input-format", "stream-json", "--output-format", "stream-json",
+                                     "--verbose", "--settings", '{"disableAllHooks":true}'],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              cwd=str(STORE), env=env,
+                              creationflags=0x08000000 if os.name == "nt" else 0) as p:   # NO_WINDOW
+            timer = threading.Timer(timeout, p.kill)   # 응답이 안 오면 stdout 읽기가 영영 안 끝난다
+            timer.start()
             try:
-                rec = _json.loads(line.decode("utf-8", "replace"))
-            except ValueError:
-                continue
-            if isinstance(rec, dict) and rec.get("type") == "control_response":
-                resp = (rec.get("response") or {}).get("response")
-                rate_limits = resp.get("rate_limits") if isinstance(resp, dict) else None
-                break
-    except (OSError, ValueError):
-        pass
-    finally:
-        timer.cancel()
-        try:
-            p.kill()
-        except OSError:
-            pass
-        p.wait()
+                p.stdin.write((_json.dumps(req) + "\n").encode("utf-8"))
+                p.stdin.flush()
+                for line in p.stdout:
+                    try:
+                        rec = _json.loads(line.decode("utf-8", "replace"))
+                    except ValueError:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    resp = rec.get("response")
+                    if (rec.get("type") == "control_response" and isinstance(resp, dict) and
+                            resp.get("request_id") == PROBE_REQUEST_ID):
+                        body = resp.get("response")
+                        rate_limits = body.get("rate_limits") if isinstance(body, dict) else None
+                        break
+            except (OSError, ValueError):
+                pass
+            finally:
+                timer.cancel()
+                try:
+                    p.kill()
+                except OSError:
+                    pass
+    except OSError:
+        return None
     limits = usage_to_limits(rate_limits)
     if limits:
         _write_claude_limits(limits)
@@ -689,11 +704,18 @@ def probe_claude_limits():
 
 
 def _probe_loop():
+    ok = None
     while True:
         try:
-            probe_claude_limits()
+            got = probe_claude_limits() is not None
         except Exception as e:                 # 조회가 죽어도 서버는 살아 있어야 한다
             print(f"  ! Claude 한도 조회 실패: {e}", file=sys.stderr)
+            got = False
+        if got != ok:                          # 로그가 5분마다 쌓이지 않게 상태가 바뀔 때만 남긴다
+            print("  Claude 한도 조회 " + ("성공" if got else
+                  "실패 ― Claude Code 2.1.274 이상·로그인·네트워크를 확인하세요 (상태줄 값이 있으면 그것을 씁니다)"),
+                  file=sys.stderr)
+            ok = got
         time.sleep(CLAUDE_PROBE_INTERVAL)
 
 
@@ -973,12 +995,13 @@ def _view_url(info):
     return f"http://127.0.0.1:{info['port']}/"
 
 
-def _passthrough(args):
+def _passthrough(args, secret=True):
+    """secret=False 면 --token 을 뺀다 ― server.json 에 남기는 용도."""
     out = []
     for flag, val in (("--host", args.host), ("--port", str(args.port)),
                       ("--machine", args.machine), ("--claude-dir", args.claude_dir),
                       ("--since", args.since), ("--until", args.until),
-                      ("--pricing", args.pricing), ("--token", args.token)):
+                      ("--pricing", args.pricing), ("--token", args.token if secret else None)):
         if val:
             out += [flag, str(val)]
     for w in (args.watch or []):
@@ -1004,6 +1027,11 @@ def do_daemon(args):
         if not args.no_browser:
             webbrowser.open(_view_url(live))
         return
+    # 기록에 없는 인스턴스가 이 포트에 떠 있으면, 새로 띄운 것이 바인드에 실패해도 아래 대기 루프의
+    # ping 은 그쪽이 받아 "시작했습니다"로 잘못 끝난다(2026-09-28 리뷰).
+    if _ping(args.host, args.port, timeout=0.5):
+        raise SystemExit(f"\n  포트 {args.port} 에 이미 대시보드가 응답합니다(기록 없는 인스턴스).\n"
+                         "  그것을 먼저 끄거나 --port 로 다른 번호를 주세요.\n")
 
     STORE.mkdir(parents=True, exist_ok=True)
     script = str(_Path(__file__).resolve())
@@ -1034,7 +1062,9 @@ def do_daemon(args):
             f"\n  20초 안에 응답이 없어 포기했습니다. 로그를 확인하세요:\n  {LOGFILE}\n"
         )
 
-    info = {"pid": proc.pid, "host": args.host, "port": args.port, "args": _passthrough(args),
+    # 토큰은 파일에 남기지 않는다. --restart 는 had_token 을 보고 다시 달라고 한다.
+    info = {"pid": proc.pid, "host": args.host, "port": args.port,
+            "args": _passthrough(args, secret=False), "had_token": bool(args.token),
             "started_at": datetime.now().isoformat(timespec="seconds")}
     PIDFILE.write_text(_json.dumps(info), encoding="utf-8")
 
@@ -1100,6 +1130,34 @@ def do_stop(args):
     else:
         print(f"\n  포트 {port} 는 응답하지만 pid {pid} 가 python 이 아닙니다. 기록이 어긋나 있어")
         print(f"  아무것도 끄지 않고 기록만 지웠습니다. 포트 {port} 에 떠 있는 것은 직접 확인하세요.\n")
+
+
+def do_restart(ap, args):
+    """기록된 인스턴스를 끄고 그때 옵션으로 다시 띄운다. 이번에 준 옵션이 기록보다 우선한다."""
+    try:
+        info = _json.loads(PIDFILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        info = None
+    if not isinstance(info, dict):
+        raise SystemExit("\n  기록된 백그라운드 인스턴스가 없습니다.  시작: --daemon\n")
+    saved = info.get("args")
+    if not isinstance(saved, list):            # "args" 를 기록하기 전 빌드가 띄운 데몬
+        saved = ["--host", str(info.get("host", "127.0.0.1")), "--port", str(info.get("port", 8787))]
+        print("  이전 데몬의 --host/--port 만 이어받습니다. --watch·--token 을 썼다면 이번에 같이 주세요.")
+    if info.get("had_token") and not args.token:
+        raise SystemExit("\n  --token 을 쓰던 인스턴스입니다. 토큰은 저장하지 않으므로 --restart --token <값> 으로 주세요.\n")
+    do_stop(args)
+    for _ in range(20):                        # 끈 인스턴스가 포트를 놓을 때까지 (최대 5초)
+        if not _ping(info.get("host", "127.0.0.1"), info.get("port", 8787), timeout=0.5):
+            break
+        time.sleep(0.25)
+    else:
+        raise SystemExit("\n  이전 인스턴스가 아직 응답합니다. 끄지 못했으니 위 메시지를 확인하세요.\n")
+    args = ap.parse_args(saved + _sys.argv[1:])   # 뒤에 온 이번 옵션이 기록을 덮는다
+    if args.watch:
+        args.watch = list(dict.fromkeys(args.watch))
+    args.no_browser = True
+    do_daemon(args)
 
 
 def do_status(args):
@@ -1418,18 +1476,7 @@ def main():
     elif args.stop:
         do_stop(args)
     elif args.restart:
-        try:
-            info = _json.loads(PIDFILE.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            info = {}
-        do_stop(args)
-        if isinstance(info.get("args"), list):
-            args = ap.parse_args(info["args"])
-        elif info:                             # "args" 를 기록하기 전 빌드가 띄운 데몬
-            args.host, args.port = info.get("host", args.host), info.get("port", args.port)
-            print("  이전 데몬의 --host/--port 만 이어받습니다. --watch·--token 을 썼다면 --stop 후 직접 --daemon 하세요.")
-        args.no_browser = True
-        do_daemon(args)
+        do_restart(ap, args)
     elif args.status:
         do_status(args)
     elif args.install:
