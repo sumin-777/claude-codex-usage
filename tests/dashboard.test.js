@@ -66,7 +66,7 @@ assert.strictEqual(cell.main, "—");
 assert.strictEqual(cell.warning, "");
 
 const level = sandbox(["limitLevel"]).limitLevel;
-[[0, ""], [79.9, ""], [80, "warn"], [89.9, "warn"], [90, "danger"], [105, "danger"]]
+[[0, ""], [74.9, ""], [75, "warn"], [89.9, "warn"], [90, "danger"], [105, "danger"]]
   .forEach(pair => assert.strictEqual(level(pair[0]), pair[1], "limitLevel(" + pair[0] + ")"));
 const live = sandbox(["latestClaudeLimits"]);
 const now = new Date(2026, 8, 14, 13, 30), sec = Math.floor(now.getTime() / 1000);

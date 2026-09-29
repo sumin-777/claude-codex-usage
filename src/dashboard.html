@@ -434,6 +434,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
   "use strict";
 
   var SERIES = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+  var CODEX_VAR = "--ink";  // 머신 색(SERIES)과 겹치지 않게
   var COMP = [
     { k: "cr", name: "캐시 읽기", v: "--s1" },
     { k: "cw", name: "캐시 쓰기", v: "--s2" },
@@ -861,8 +862,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var box = document.getElementById("machineChips");
     box.textContent = "";
     var ids = allMachines();
-    if (ids.length < 2) return;
-    ids.forEach(function (id) {
+    if (ids.length > 1) ids.forEach(function (id) {
       var on = !state.off[id];
       var c = el("button", "chip");
       c.type = "button";
@@ -877,6 +877,17 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       };
       box.appendChild(c);
     });
+    // Codex 선은 머신 막대와 따로 켜고 끈다 (일별 그래프만)
+    if (!ids.some(function (id) { return state.machines[id].codex; })) return;
+    var cc = el("button", "chip");
+    cc.type = "button";
+    cc.setAttribute("aria-pressed", state.codexOff ? "false" : "true");
+    var cd = el("span", "dot");
+    cd.style.background = cvar(CODEX_VAR);
+    cc.appendChild(cd);
+    cc.appendChild(document.createTextNode("Codex"));
+    cc.onclick = function () { state.codexOff = !state.codexOff; render(); };
+    box.appendChild(cc);
   }
 
   function renderStats(D) {
@@ -939,8 +950,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return best.weekly || best.fiveHour ? best : null;
   }
 
-  // 한도 미터 색: 80% 이상 노랑, 90% 이상 빨강
-  function limitLevel(pct) { return pct >= 90 ? "danger" : pct >= 80 ? "warn" : ""; }
+  // 한도 미터 색: 75% 이상 노랑, 90% 이상 빨강
+  function limitLevel(pct) { return pct >= 90 ? "danger" : pct >= 75 ? "warn" : ""; }
 
   function renderClaudeLimits() {
     var now = new Date(), live = latestClaudeLimits(now), lw = live && live.weekly, l5 = live && live.fiveHour;
@@ -1061,7 +1072,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     // Codex 는 캐시 개념도 단가도 달라서 Claude 막대에 더하면 안 된다.
     // 날짜 축만 공유하고 오른쪽 축에 별도 선으로 얹는다.
     var codexBy = {}, codexMax = 0;
-    D.ids.forEach(function (id) {
+    if (!state.codexOff) D.ids.forEach(function (id) {
       var C = state.machines[id].codex;
       if (!C || !C.daily) return;
       Object.keys(C.daily).forEach(function (day) {
@@ -1136,7 +1147,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
 
     // Codex: 오른쪽 축에 점선. 막대와 더해서 읽는 값이 아니다.
-    var codexTop = 0, codexColor = cvar("--s2");
+    var codexTop = 0, codexColor = cvar(CODEX_VAR);
     if (hasCodex) {
       var cstep = Math.pow(10, Math.floor(Math.log10(codexMax)));
       codexTop = Math.ceil(codexMax / cstep) * cstep;
