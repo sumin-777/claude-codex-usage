@@ -1210,6 +1210,7 @@ table.ledger td.mut { color: var(--ink-mute); font-size: 12.5px; }
 .badges { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
 .badge { font:10px var(--mono); color:var(--ink-mute); border:1px solid var(--rule); border-radius:999px; padding:1px 6px; }
 .limit-meter { margin:8px 0; }
+.claude-off .cl { display: none !important; }
 .limit-meter .mini { height:8px; margin-top:4px; }
 .limit-meter.warn .mini > i { background: var(--s4); }
 .limit-meter.danger .mini > i { background: var(--s8); }
@@ -1248,9 +1249,9 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     </div>
     <div class="head-meta">
       <a class="lbl gh-link" href="https://github.com/sumin-777/claude-codex-usage" target="_blank" rel="noopener">GitHub ↗</a>
-      <div class="lbl">누적 검침값</div>
-      <div class="meter"><b id="meterTotal">—</b><span id="meterUnit">토큰</span></div>
-      <div class="lbl" id="meterRange" style="margin-top:4px">—</div>
+      <div class="lbl cl">누적 검침값</div>
+      <div class="meter cl"><b id="meterTotal">—</b><span id="meterUnit">토큰</span></div>
+      <div class="lbl cl" id="meterRange" style="margin-top:4px">—</div>
     </div>
   </header>
 
@@ -1271,18 +1272,18 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
   <div class="banner" id="banner" hidden></div>
 
-  <div class="stats" id="stats"></div>
+  <div class="stats cl" id="stats"></div>
 
   <section id="codexSection" hidden>
     <div class="sec-head">
       <h2>Claude · Codex 사용량</h2>
       <div class="note" id="codexNote"></div>
     </div>
-    <div class="limit-meter" id="claudeFiveMeter" hidden>
+    <div class="limit-meter cl" id="claudeFiveMeter" hidden>
       <div id="claudeFiveText"></div>
       <div class="mini"><i id="claudeFiveFill"></i></div>
     </div>
-    <div class="limit-meter" id="claudeWeeklyMeter" hidden>
+    <div class="limit-meter cl" id="claudeWeeklyMeter" hidden>
       <div id="claudeWeeklyText"></div>
       <div class="mini"><i id="claudeWeeklyFill"></i></div>
     </div>
@@ -1306,7 +1307,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     <div class="legend" id="dailyLegend"></div>
   </section>
 
-  <section>
+  <section class="cl">
     <div class="sec-head">
       <h2>턴당 컨텍스트</h2>
       <div class="note" id="ctxNote">캐시 읽기 ÷ 메시지 · 실효 컨텍스트 크기</div>
@@ -1318,7 +1319,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     <p class="hint">우상향 추세는 세션 컨텍스트가 점점 길어지고 있다는 신호입니다.</p>
   </section>
 
-  <section class="grid2">
+  <section class="grid2 cl">
     <div>
       <div class="sec-head">
         <h2>토큰 구성</h2>
@@ -1339,7 +1340,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     </div>
   </section>
 
-  <section>
+  <section class="cl">
     <div class="sec-head">
       <h2>머신별</h2>
       <div class="note" id="machineNote"></div>
@@ -1349,7 +1350,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     </div>
   </section>
 
-  <section class="grid2">
+  <section class="grid2 cl">
     <div>
       <div class="sec-head">
         <h2>프로젝트별</h2>
@@ -1384,7 +1385,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     </p>
   </section>
 
-  <section id="limitSection" hidden>
+  <section id="limitSection" class="cl" hidden>
     <details>
       <summary class="sec-head">
         <h2>한도에 걸린 기록</h2>
@@ -1760,6 +1761,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var t1 = (window.performance || Date).now();
     renderHeader(D);
     renderChips();
+    document.querySelector(".wrap").classList.toggle("claude-off", claudeHidden());
     renderStats(D);
     renderCodex(D);
     renderLimitHits(D);
@@ -1832,6 +1834,12 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     b.hidden = true;
   }
 
+  function hasAnyCodex() {
+    return allMachines().some(function (id) { return state.machines[id].codex; });
+  }
+  // Codex 기록이 없어지면 Claude 를 다시 켤 칩도 없으니 꺼 둔 채로 두지 않는다
+  function claudeHidden() { return !!state.claudeOff && hasAnyCodex(); }
+
   function renderChips() {
     var box = document.getElementById("machineChips");
     box.textContent = "";
@@ -1851,17 +1859,23 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       };
       box.appendChild(c);
     });
-    // Codex 선은 머신 막대와 따로 켜고 끈다 (일별 그래프만)
-    if (!ids.some(function (id) { return state.machines[id].codex; })) return;
-    var cc = el("button", "chip");
-    cc.type = "button";
-    cc.setAttribute("aria-pressed", state.codexOff ? "false" : "true");
-    var cd = el("span", "dot");
-    cd.style.background = cvar(CODEX_VAR);
-    cc.appendChild(cd);
-    cc.appendChild(document.createTextNode("Codex"));
-    cc.onclick = function () { state.codexOff = !state.codexOff; render(); };
-    box.appendChild(cc);
+    // Claude(화면 전체)와 Codex(일별 그래프 선)를 따로 켜고 끈다. 둘 다 끌 수는 없다
+    if (!hasAnyCodex()) return;
+    [["claudeOff", "Claude", "--ink-mute", "codexOff"],
+     ["codexOff", "Codex", CODEX_VAR, "claudeOff"]].forEach(function (t) {
+      var cc = el("button", "chip");
+      cc.type = "button";
+      cc.setAttribute("aria-pressed", state[t[0]] ? "false" : "true");
+      var cd = el("span", "dot");
+      cd.style.background = cvar(t[2]);
+      cc.appendChild(cd);
+      cc.appendChild(document.createTextNode(t[1]));
+      cc.onclick = function () {
+        if (!state[t[0]] && state[t[3]]) return;
+        state[t[0]] = !state[t[0]]; render();
+      };
+      box.appendChild(cc);
+    });
   }
 
   function renderStats(D) {
@@ -1903,7 +1917,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     return dayKey(new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())));
   }
 
-  // 상태줄이 받은 실제값. 주간·5시간을 따로 고른다 ― 리셋이 지난 창은 버린다.
+  // 상태줄이 받은 실제값. 주간·5시간을 따로 고른다 ― 리셋이 지난 창은 Codex 처럼 stale 로 표시한다.
   function latestClaudeLimits(now) {
     var best = {weekly:null, fiveHour:null};
     Object.keys(state.machines).forEach(function (id) {
@@ -1913,10 +1927,11 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       if (!isFinite(at)) return;
       [["seven_day", "weekly"], ["five_hour", "fiveHour"]].forEach(function (pair) {
         var w = limits[pair[0]];
-        if (!w || Number(w.resets_at) * 1000 <= now.getTime()) return;
+        if (!w) return;
         if (best[pair[1]] && at <= best[pair[1]].at) return;
         best[pair[1]] = {
           at: at, recorded_at: limits.recorded_at, pct: Number(w.used_percentage), resets_at: w.resets_at,
+          stale: Number(w.resets_at) * 1000 <= now.getTime(),
           machine: (payload.machine && payload.machine.label) || id
         };
       });
@@ -1931,11 +1946,12 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var now = new Date(), live = latestClaudeLimits(now), lw = live && live.weekly, l5 = live && live.fiveHour;
     var meter = function (key, label, value) {
       var box = document.getElementById("claude" + key + "Meter");
-      box.hidden = !value;                     // 리셋이 지난 창은 latestClaudeLimits 가 이미 버렸다
+      box.hidden = !value;
       if (!value) return;
-      box.className = "limit-meter " + limitLevel(value.pct);
+      box.className = "limit-meter cl " + (value.stale ? "stale" : limitLevel(value.pct));   // Codex 와 같이 만료된 창은 색을 안 입힌다
       document.getElementById("claude" + key + "Text").textContent = "Claude " + label + " " + Math.round(value.pct) +
-        "% · 리셋 " + localTime(value.resets_at) + " · " + relativeTime(value.recorded_at, now.getTime()) + " · " + value.machine;
+        "% · 리셋 " + localTime(value.resets_at) + " · " + relativeTime(value.recorded_at, now.getTime()) + " · " + value.machine +
+        (value.stale ? " · 만료됨" : "");
       document.getElementById("claude" + key + "Fill").style.width = Math.max(0, Math.min(100, value.pct)) + "%";
     };
     meter("Five", "5시간", l5);
@@ -1975,9 +1991,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         var peak = Math.max(Number(w.peak_percent || 0), last);
         var row = el("div", "limit-meter " + (stale ? "stale" : limitLevel(peak)));   // 만료된 창은 지금 상태가 아니라 색을 안 입힌다
         row.appendChild(el("div", null, "Codex " + windowName(w.window_minutes) + " " +
-          peak.toFixed(1) + "%" + (peak - last >= 1 ? " (최근 보고 " + last.toFixed(1) + "%)" : "") +
-          " · 리셋 " + localTime(w.resets_at) +
-          (newest.plan ? " · " + newest.plan : "") + " · " + localTime(newest.at) + " 기준" +
+          Math.round(peak) + "%" + (peak - last >= 1 ? " (최근 보고 " + Math.round(last) + "%)" : "") +
+          " · 리셋 " + localTime(w.resets_at) + " · " + relativeTime(newest.at) +
           " · " + state.machines[newestId].machine.label + (stale ? " · 만료됨" : "")));
         var mini = el("div", "mini"), fill = el("i");
         fill.style.width = Math.max(0, Math.min(100, peak)) + "%";
@@ -2057,6 +2072,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
     rows.forEach(function (r) { if (codexBy[r.day] > codexMax) codexMax = codexBy[r.day]; });
     var hasCodex = codexMax > 0;
+    var showClaude = !claudeHidden();
 
     var padL = 46, padR = hasCodex ? 48 : 10, padT = 12, padB = 26;
     var iw = W - padL - padR, ih = H - padT - padB;
@@ -2065,7 +2081,8 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     svg.textContent = "";
 
     document.getElementById("dailyNote").textContent =
-      rows.length ? rows.length + "일 · 머신별 누적" + (hasCodex ? " · Codex 는 오른쪽 축" : "") : "";
+      !rows.length ? "" : !showClaude ? rows.length + "일 · Codex 만" :
+      rows.length + "일 · 머신별 누적" + (hasCodex ? " · Codex 는 오른쪽 축" : "");
 
     if (!rows.length) { dailyGeom = null; return; }
 
@@ -2084,6 +2101,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       svg.appendChild(svgEl("line", {
         x1: padL, x2: W - padR, y1: y, y2: y, stroke: rule, "stroke-width": 1
       }));
+      if (!showClaude) return;  // Claude 를 끄면 왼쪽 축 숫자도 뺀다
       var t = svgEl("text", {
         x: padL - 8, y: y + 3.5, fill: muted, "text-anchor": "end",
         "font-family": "var(--mono)", "font-size": 10
@@ -2098,7 +2116,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var ids = D.ids;
 
     rows.forEach(function (r, i) {
-      if (!r.total) return;
+      if (!r.total || !showClaude) return;
       var x = padL + bw * i + (bw - barW) / 2;
       var y = padT + ih;
       ids.forEach(function (id) {
@@ -2177,12 +2195,13 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     });
     svg.appendChild(cross);
     dailyGeom = { W: W, H: H, padL: padL, padT: padT, ih: ih, bw: bw, rows: rows, ids: ids,
-                  cross: cross, svg: svg, codexBy: codexBy, codexColor: codexColor };
+                  cross: cross, svg: svg, codexBy: codexBy, codexColor: codexColor,
+                  showClaude: showClaude };
 
     // legend
     var lg = document.getElementById("dailyLegend");
     lg.textContent = "";
-    if (ids.length > 1) {
+    if (ids.length > 1 && showClaude) {
       ids.forEach(function (id) {
         var i2 = el("i");
         var b2 = el("b"); b2.style.background = colorOf(id);
@@ -2223,8 +2242,11 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
 
       tip.textContent = "";
       tip.appendChild(el("div", "t-day", r.day + " (" + WD[weekdayOf(r.day)] + ")"));
-      tip.appendChild(el("div", "t-tot", fmt(r.total) + " 토큰"));
-      if (r.total) {
+      tip.appendChild(el("div", "t-tot", g.showClaude ? fmt(r.total) + " 토큰" :
+        "Codex " + fmt(g.codexBy[r.day] || 0) + " 토큰"));
+      if (!g.showClaude) {
+        // Codex 만 볼 때는 합계 줄 하나로 끝
+      } else if (r.total) {
         var tb = el("table");
         g.ids.forEach(function (id) {
           var v = r.per[id]; if (!v) return;

@@ -77,11 +77,14 @@ live.state.machines = {
 };
 let got = live.latestClaudeLimits(now);   // 머신 여럿이면 가장 새로 기록된 값
 assert.strictEqual(got.weekly.machine, "a"); assert.strictEqual(got.weekly.pct, 64); assert.strictEqual(got.fiveHour.pct, 65);
-// 주간이 만료돼도 5시간은 따로 남고(주간은 다른 머신의 옛 값으로 넘어가지 않게 그 머신 것도 만료), 5시간까지 만료되면 아무것도 없다
-live.state.machines.a.claude_limits.seven_day.resets_at = sec - 1; live.state.machines.b.claude_limits.seven_day.resets_at = sec - 1;
+assert.strictEqual(got.weekly.stale, false);
+// 리셋이 지난 창도 버리지 않고 stale 로 남긴다(Codex 처럼 '만료됨' 표시). 5시간은 따로 판정
+live.state.machines.a.claude_limits.seven_day.resets_at = sec - 1;
 got = live.latestClaudeLimits(now);
-assert.strictEqual(got.weekly, null); assert.strictEqual(got.fiveHour.pct, 65);
-live.state.machines.a.claude_limits.five_hour.resets_at = sec - 1;
+assert.strictEqual(got.weekly.machine, "a"); assert.strictEqual(got.weekly.stale, true); assert.strictEqual(got.fiveHour.stale, false);
+live.state.machines.a = {};
+assert.strictEqual(live.latestClaudeLimits(now).weekly.machine, "old");
+live.state.machines = {};
 assert.strictEqual(live.latestClaudeLimits(now), null);
 const limits = sandbox(["normalizeClaudeLimits"]);
 let cleanLimits = limits.normalizeClaudeLimits({ recorded_at:"2026-09-17T01:02:03Z", account:"secret", seven_day:{used_percentage:64,resets_at:1789711200,extra:true} });
