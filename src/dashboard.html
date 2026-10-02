@@ -288,7 +288,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       <button data-range="90" aria-pressed="false">90일</button>
       <button data-range="all" aria-pressed="true">전체</button>
     </div>
-    <div id="machineChips" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    <div id="machineChips" style="display:flex;flex-direction:column;gap:8px"></div>
     <div class="spacer"></div>
     <button class="btn" id="btnAdd">+ 수집 파일 불러오기</button>
     <button class="btn" id="btnSync" hidden>이 대시보드에 저장</button>
@@ -870,7 +870,16 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     var box = document.getElementById("machineChips");
     box.textContent = "";
     var ids = allMachines();
-    if (ids.length > 1) ids.forEach(function (id) {
+    // 한 줄은 Claude/Codex, 다음 줄은 기기. 줄마다 하나는 켜 둬야 하므로 각자 따로 고를 수 있다
+    function row() {
+      var r = el("div");
+      r.style.cssText = "display:flex;flex-wrap:wrap;gap:8px";
+      box.appendChild(r);
+      return r;
+    }
+    var rowKind = hasAnyCodex() ? row() : null;
+    var rowMachine = ids.length > 1 ? row() : null;
+    if (rowMachine) ids.forEach(function (id) {
       var on = !state.off[id];
       var c = el("button", "chip");
       c.type = "button";
@@ -883,10 +892,10 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         if (on && activeMachines().length === 1) return;
         state.off[id] = on; render();
       };
-      box.appendChild(c);
+      rowMachine.appendChild(c);
     });
     // Claude(화면 전체)와 Codex(일별 그래프 선)를 따로 켜고 끈다. 둘 다 끌 수는 없다
-    if (!hasAnyCodex()) return;
+    if (!rowKind) return;
     [["claudeOff", "Claude", "--ink-mute", "codexOff"],
      ["codexOff", "Codex", CODEX_VAR, "claudeOff"]].forEach(function (t) {
       var cc = el("button", "chip");
@@ -900,7 +909,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
         if (!state[t[0]] && state[t[3]]) return;
         state[t[0]] = !state[t[0]]; render();
       };
-      box.appendChild(cc);
+      rowKind.appendChild(cc);
     });
   }
 
