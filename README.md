@@ -185,6 +185,7 @@ python3 claude-usage.py --daemon --watch ~/Dropbox/claude-usage
 
 상태는 `~/.claude-usage/` 아래에 둔다 — `machines/` (받은 스냅샷),
 `cache/` (증분 스캔 캐시), `claude_limits.json` (Claude 실제 한도), `server.log`.
+`claude_limits_history.jsonl` 은 한도 %가 바뀔 때마다 한 줄씩 덧붙는 이력이다 (주 단위 비교용, 화면과 수집 JSON 에는 쓰지 않는다).
 
 ## 증분 스캔
 

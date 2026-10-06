@@ -142,6 +142,8 @@ schema 2의 선택 필드 `hourly`, `recent_sessions`, `codex`, `plan`, `limit_h
 `limit_hits`는 거절 시각·상태와 세션·프로젝트만 담는다. 프롬프트, 코드, 파일 경로,
 이메일, 이름, 계정·조직 ID는 절대 담지 않는다. 선택 필드는 데이터가 없으면 생략한다.
 `claude_limits`는 상태줄이 받은 5시간·주간 퍼센트·리셋 시각과 기록 시각만 담는다.
+`claude_limits_history.jsonl`(같은 폴더)은 `_write_claude_limits` 가 값이 바뀔 때만 덧붙이는 로컬 이력이며
+payload 에는 싣지 않는다. 중복은 파일 마지막 줄과 비교해 거른다(상태줄과 조회 스레드가 따로 쓰므로 메모리에 기대지 않는다).
 
 증분 스캔의 행 캐시 형식을 바꿨으면 `CACHE_VERSION`(server.py)도 올린다. 안 올리면
 낡은 캐시 행이 그대로 재사용돼 새 필드가 조용히 0 으로 남는다.
