@@ -573,8 +573,35 @@ def _statusline_print(text):
             pass
 
 
+CLAUDE_LIMITS_HISTORY_FILE = CLAUDE_LIMITS_FILE.with_name("claude_limits_history.jsonl")
+
+
+def _append_limits_history(limits):
+    """한도 %가 바뀐 때만 한 줄 덧붙인다. 최신값 하나만 남으면 주 단위 비교를 못 한다.
+    상태줄과 조회 스레드가 따로 부르므로 마지막 줄을 읽어 중복을 거른다(메모리 상태에 기대지 않는다)."""
+    def key(d):
+        return {k: v for k, v in d.items() if k != "recorded_at"}
+    try:
+        last = None
+        try:
+            with CLAUDE_LIMITS_HISTORY_FILE.open("rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 1024))
+                lines = f.read().decode("utf-8", "replace").strip().splitlines()
+            last = _json.loads(lines[-1]) if lines else None
+        except (OSError, ValueError):
+            pass
+        if isinstance(last, dict) and key(last) == key(limits):
+            return
+        with CLAUDE_LIMITS_HISTORY_FILE.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(limits, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass   # 이력은 부가 기능이다. 쓰지 못해도 최신값 기록은 계속돼야 한다
+
+
 def _write_claude_limits(limits):
     CLAUDE_LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _append_limits_history(limits)
     tmp = CLAUDE_LIMITS_FILE.with_name(CLAUDE_LIMITS_FILE.name + ".%s.tmp" % os.getpid())
     try:
         with tmp.open("w", encoding="utf-8") as f:

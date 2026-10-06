@@ -134,6 +134,15 @@ def _probe_cases(server, path):
     got = server.probe_claude_limits([sys.executable, str(fake), "ok"])
     assert got and got["five_hour"]["used_percentage"] == 30, got      # 77 이면 request_id 무시, 99 면 env 누락
     assert json.loads(path.read_text(encoding="utf-8"))["seven_day"]["used_percentage"] == 30
+    hist = server.CLAUDE_LIMITS_HISTORY_FILE
+    count = lambda: len(hist.read_text(encoding="utf-8").splitlines())
+    assert hist.parent == path.parent and count() == 1
+    again = dict(got, recorded_at="2099-01-01T00:00:00+00:00")
+    server._write_claude_limits(again)
+    assert count() == 1, "same percentages must not add a history line"
+    again["seven_day"] = dict(again["seven_day"], used_percentage=31)
+    server._write_claude_limits(again)
+    assert count() == 2 and json.loads(hist.read_text(encoding="utf-8").splitlines()[-1])["seven_day"]["used_percentage"] == 31
     path.unlink()
     t0 = datetime.now()
     assert server.probe_claude_limits([sys.executable, str(fake), "hang"], timeout=1) is None
