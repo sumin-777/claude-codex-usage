@@ -184,6 +184,19 @@ details[open] > summary.sec-head h2::before { content: "▾ "; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; }
 .grid2 > * { min-width: 0; }   /* 그리드 칸이 안쪽 표·히트맵 폭만큼 벌어지지 않게 ― 넘치면 각자 스크롤 */
 @media (max-width: 760px) { .grid2 { grid-template-columns: 1fr; gap: 30px; } }
+/* 휴대폰 폭: 헤더 검침값은 왼쪽 정렬, 통계는 두 칸 격자(세로줄은 오른쪽 칸에만) */
+@media (max-width: 560px) {
+  .wrap { padding: 20px 16px 56px; }
+  .head-meta { margin-left: 0; text-align: left; }
+  .meter b { font-size: 34px; }
+  .spacer { display: none; }
+  table.ledger td.r, table.ledger td.mut, table.ledger th.r { white-space: nowrap; }   /* 숫자·날짜가 칸 안에서 쪼개지지 않게. 넘치면 표가 가로로 스크롤 */
+  .sec-head { flex-wrap: wrap; gap: 2px 12px; }
+  .sec-head .note { margin-left: 0; flex-basis: 100%; }
+  .stats { grid-template-columns: 1fr 1fr; gap: 16px 0; }
+  .stat, .stats > .stat:first-child { border-left: 0; padding-left: 0; }
+  .stats > .stat:nth-child(even) { border-left: 1px solid var(--rule-soft); padding-left: 16px; }
+}
 
 /* ---------- charts ---------- */
 .chartbox { position: relative; }
@@ -1206,7 +1219,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
     }
 
     // x labels
-    var ticks = Math.min(7, n);
+    var ticks = Math.min(7, n, Math.max(2, Math.floor((W - padL - padR) / 56)));   // 좁은 화면에선 라벨이 겹치지 않게 줄인다
     var seen = {};
     for (var t2 = 0; t2 < ticks; t2++) {
       var idx = Math.round((n - 1) * (ticks === 1 ? 0 : t2 / (ticks - 1)));
@@ -1391,7 +1404,7 @@ footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--rule);
       });
     }
 
-    var ticks = Math.min(7, n);
+    var ticks = Math.min(7, n, Math.max(2, Math.floor((W - padL - padR) / 56)));   // 좁은 화면에선 라벨이 겹치지 않게 줄인다
     var seen = {};
     for (var t2 = 0; t2 < ticks; t2++) {
       var idx = Math.round((n - 1) * (ticks === 1 ? 0 : t2 / (ticks - 1)));
