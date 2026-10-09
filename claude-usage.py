@@ -3594,13 +3594,16 @@ CLAUDE_PROBE_INTERVAL = 300.0   # 초. 사용량 조회를 너무 자주 부르�
 
 def _claude_exe():
     """데스크톱 앱에 딸린 최신 Claude Code. get_usage 제어 요청은 2.1.274 부터 받는다."""
+    root = _Path(os.environ.get("APPDATA") or "") / "Claude" / "claude-code"
+
     def version(p):
         try:
-            return tuple(int(x) for x in p.parent.name.split("."))
+            return tuple(int(x) for x in p.relative_to(root).parts[0].split("."))
         except ValueError:
             return ()
-    appdata = os.environ.get("APPDATA")
-    found = sorted(_Path(appdata).glob("Claude/claude-code/*/claude.exe"), key=version) if appdata else []
+    # 예전엔 <버전>/claude.exe, 2.1.28x 부터는 <버전>/<해시>/claude.exe
+    found = sorted(list(root.glob("*/claude.exe")) + list(root.glob("*/*/claude.exe")), key=version) \
+        if os.environ.get("APPDATA") else []
     return str(found[-1]) if found else shutil.which("claude")
 
 
